@@ -22,9 +22,18 @@ import {
   removeTicketAccess,
   saveBiometricProfile,
   saveTicketAccess,
+  setLoggedUserEmail,
   type SystemNotification,
   type TicketAccess,
 } from "@/app/lib/storage";
+
+const PYTHON_API_URL =
+  process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://127.0.0.1:8000";
+
+interface FaceCheckItem {
+  ok: boolean;
+  detalhe: string;
+}
 
 import type { OfficialMatch, StadiumSector } from "@/app/api/jogos/route";
 import { ClubCrest } from "@/app/components/ClubCrest";
@@ -84,6 +93,15 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
   const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [liveQualityScore, setLiveQualityScore] = useState<number>(0);
+  const [validatingFace, setValidatingFace] = useState<boolean>(false);
+  const [faceChecks, setFaceChecks] = useState<Record<
+    string,
+    FaceCheckItem
+  > | null>(null);
+  const [faceRejectionReasons, setFaceRejectionReasons] = useState<string[]>(
+    [],
+  );
+  const [sessionChecked, setSessionChecked] = useState<boolean>(false);
 
   // User Profile Form States (100% user-entered, empty by default)
   const [nome, setNome] = useState<string>("");
@@ -296,6 +314,8 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         setAdminSessionEmail(null);
       } catch {
         // ignore
+      } finally {
+        setSessionChecked(true);
       }
     };
 
@@ -317,6 +337,8 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         }
       } catch {
         // ignore
+      } finally {
+        setSessionChecked(true);
       }
     };
 
@@ -473,95 +495,184 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     }
     ctx.drawImage(video, 0, 0, width, height);
     const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
-    const measuredQuality = liveQualityScore || 98.5;
-    stopCamera();
+    setFaceRejectionReasons([]);
+    setCameraError(null);
+    setValidatingFace(true);
 
-    if (cameraMode === "test") {
-      addSystemNotification({
-        categoria: "acesso",
-        selo: "CATRACA LIBERADA",
-        titulo: "Leitura Biométrica Validada pela Câmera",
-        mensagem: `Reconhecimento facial confirmado com ${measuredQuality}% de qualidade óptica no dispositivo.`,
-        detalheRodape: activeTicket
-          ? `Portão ${activeTicket.portao} • ${activeTicket.setor}`
-          : "Biometria facial validada no terminal",
-      });
-      setNotifications(getStoredNotifications());
-      setStatusToast(
-        `Leitura biométrica validada com ${measuredQuality}% de qualidade.`,
-      );
-      return;
-    }
+    try {
+      // MODE 1: Live 1:1 Biometric Verification against Python SQLite Embedding
+      if (cameraMode === "test") {
+        const userEmail = profile?.email || loggedEmail || "";
+        const res = await fetch(
+          `${PYTHON_API_URL}/api/v1/biometria/verificar`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              email: userEmail,
+              imageDataUrl: dataUrl,
+            }),
+          },
+        );
 
-    // If user is completing Step 2 of mandatory facial registration:
-    if (pendingRegistration) {
-      const regRes = await registerUserAccount({
-        nome: pendingRegistration.nome,
-        email: pendingRegistration.email,
-        cpf: pendingRegistration.cpf,
-        password: pendingRegistration.password,
-        matricula: pendingRegistration.matricula,
-      });
+        const data = (await res.json()) as {
+          aprovado?: boolean;
+          similaridade?: number;
+          motivos?: string[];
+          checks?: Record<string, FaceCheckItem>;
+          detail?: string;
+        };
 
-      if (!regRes.ok) {
-        setStatusToast(regRes.error);
-        setPendingRegistration(null);
-        setActiveTab("perfil");
+        if (data.checks) setFaceChecks(data.checks);
+
+        if (!res.ok || !data.aprovado) {
+          setFaceRejectionReasons(
+            data.motivos && data.motivos.length > 0
+              ? data.motivos
+              : [data.detail || "Reconhecimento facial não aprovado."],
+          );
+          return;
+        }
+
+        stopCamera();
+        addSystemNotification({
+          categoria: "acesso",
+          selo: "CATRACA LIBERADA",
+          titulo: "Identidade Facial Confirmada (Python CV)",
+          mensagem: `Rosto validado com ${data.similaridade}% de similaridade com sua impressão facial única.`,
+          detalheRodape: activeTicket
+            ? `Portão ${activeTicket.portao} • ${activeTicket.setor}`
+            : "Biometria facial validada",
+        });
+        setNotifications(getStoredNotifications());
+        setStatusToast(
+          `Reconhecimento facial aprovado! Similaridade: ${data.similaridade}%.`,
+        );
         return;
       }
 
-      const saved = await saveBiometricProfile({
-        nome: pendingRegistration.nome,
-        email: pendingRegistration.email,
-        cpf: pendingRegistration.cpf,
-        matricula: pendingRegistration.matricula,
-        faceImageDataUrl: dataUrl,
-        faceQualityScore: measuredQuality,
-        imageWidth: width,
-        imageHeight: height,
-        livenessVerified: true,
-      });
+      // MODE 2: Mandatory One-Time Registration validated by Python OpenCV Engine
+      if (pendingRegistration) {
+        const res = await fetch(`${PYTHON_API_URL}/api/v1/auth/cadastrar`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            nome: pendingRegistration.nome,
+            cpf: pendingRegistration.cpf,
+            email: pendingRegistration.email,
+            password: pendingRegistration.password,
+            matricula: pendingRegistration.matricula,
+            imageDataUrl: dataUrl,
+          }),
+        });
 
-      addSystemNotification({
-        categoria: "acesso",
-        selo: "CADASTRO CONCLUÍDO",
-        titulo: `Conta e Biometria de ${saved.nome} ativadas`,
-        mensagem: `Cadastro finalizado com reconhecimento facial (${width}×${height}px • ${measuredQuality}% de qualidade) e criptografia SHA-256.`,
-        detalheRodape: "Acesso biométrico liberado na catraca",
-      });
+        const data = (await res.json()) as {
+          cadastrado?: boolean;
+          checks?: Record<string, FaceCheckItem>;
+          user?: {
+            nome: string;
+            cpf: string;
+            email: string;
+            matricula: string;
+            faceFingerprintId: string;
+            faceHashSha256: string;
+            faceQualityScore: number;
+            faceImageDataUrl: string;
+            faceLocked: boolean;
+          };
+          detail?:
+            | string
+            | {
+                mensagem?: string;
+                motivos?: string[];
+                checks?: Record<string, FaceCheckItem>;
+              };
+        };
 
-      setProfile(saved);
-      populateFormFromProfile(saved);
-      setLoggedEmail(regRes.account.email);
-      setPendingRegistration(null);
-      setAuthPassword("");
-      setNotifications(getStoredNotifications());
-      setStatusToast(
-        `Cadastro e reconhecimento facial concluídos para ${saved.nome}!`,
+        if (!res.ok || !data.cadastrado || !data.user) {
+          if (typeof data.detail === "object" && data.detail) {
+            if (data.detail.checks) setFaceChecks(data.detail.checks);
+            setFaceRejectionReasons(
+              data.detail.motivos && data.detail.motivos.length > 0
+                ? data.detail.motivos
+                : [
+                    data.detail.mensagem ||
+                      "Reconhecimento facial reprovado. Verifique iluminação, rosto descoberto, sem óculos e sem boné.",
+                  ],
+            );
+          } else {
+            setFaceRejectionReasons([
+              typeof data.detail === "string"
+                ? data.detail
+                : "Não foi possível validar sua biometria facial.",
+            ]);
+          }
+          return;
+        }
+
+        stopCamera();
+        if (data.checks) setFaceChecks(data.checks);
+
+        // Mirror validated account & immutable facial fingerprint locally
+        await registerUserAccount({
+          nome: data.user.nome,
+          email: data.user.email,
+          cpf: data.user.cpf,
+          password: pendingRegistration.password,
+          matricula: data.user.matricula,
+        });
+
+        const saved = await saveBiometricProfile({
+          nome: data.user.nome,
+          email: data.user.email,
+          cpf: data.user.cpf,
+          matricula: data.user.matricula,
+          faceImageDataUrl: data.user.faceImageDataUrl,
+          faceFingerprintId: data.user.faceFingerprintId,
+          faceQualityScore: data.user.faceQualityScore,
+          imageWidth: width,
+          imageHeight: height,
+          livenessVerified: true,
+          faceLocked: true,
+        });
+
+        addSystemNotification({
+          categoria: "acesso",
+          selo: "BIOMETRIA ÚNICA CADASTRADA",
+          titulo: `Conta e Biometria de ${saved.nome} aprovadas`,
+          mensagem: `Impressão facial única ${data.user.faceFingerprintId} registrada com ${data.user.faceQualityScore}% de qualidade e travada contra alterações.`,
+          detalheRodape: "Cadastro biométrico definitivo SDS-PE",
+        });
+
+        setLoggedUserEmail(data.user.email);
+        setProfile(saved);
+        populateFormFromProfile(saved);
+        setLoggedEmail(data.user.email);
+        setPendingRegistration(null);
+        setAuthPassword("");
+        setNotifications(getStoredNotifications());
+        setStatusToast(
+          `Cadastro e reconhecimento facial aprovados! Impressão única: ${data.user.faceFingerprintId}.`,
+        );
+        setActiveTab("ingressos");
+        return;
+      }
+
+      // Immutable rule: registered users cannot overwrite their face
+      if (profile?.faceLocked || profile?.faceImageDataUrl) {
+        stopCamera();
+        setCameraError(
+          "Sua biometria facial já foi cadastrada definitivamente e não pode ser alterada.",
+        );
+        return;
+      }
+    } catch {
+      setCameraError(
+        `Não foi possível conectar ao servidor Python de reconhecimento facial (${PYTHON_API_URL}). Inicie o back-end Python para validar a biometria.`,
       );
-      setActiveTab("perfil");
-      return;
+    } finally {
+      setValidatingFace(false);
     }
-
-    const saved = await saveBiometricProfile({
-      faceImageDataUrl: dataUrl,
-      faceQualityScore: measuredQuality,
-      imageWidth: width,
-      imageHeight: height,
-      livenessVerified: true,
-    });
-
-    addSystemNotification({
-      categoria: "acesso",
-      selo: "SEGURANÇA & SDS-PE",
-      titulo: "Biometria Facial Capturada e Criptografada",
-      mensagem: `Sua foto facial (${width}×${height}px) foi capturada pela câmera com ${measuredQuality}% de qualidade e hash SHA-256 gerado.`,
-      detalheRodape: "Pronto para o acesso sem filas",
-    });
-
-    setProfile(saved);
-    setNotifications(getStoredNotifications());
-    setStatusToast("Foto facial capturada pela câmera e salva com sucesso.");
   };
 
   const handleSavePersonalData = async (e: React.FormEvent) => {
@@ -741,7 +852,55 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         return;
       }
 
-      // Otherwise authenticate as Torcedor account
+      // Next authenticate Torcedor against Python FastAPI SQLite back-end
+      try {
+        const pyRes = await fetch(`${PYTHON_API_URL}/api/v1/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: authEmail.trim(),
+            password: authPassword,
+          }),
+        });
+
+        if (pyRes.ok) {
+          const pyData = (await pyRes.json()) as {
+            user: {
+              nome: string;
+              cpf: string;
+              email: string;
+              matricula: string;
+              faceFingerprintId: string;
+              faceQualityScore: number;
+              faceImageDataUrl: string;
+              faceLocked: boolean;
+            };
+          };
+          const saved = await saveBiometricProfile({
+            nome: pyData.user.nome,
+            cpf: pyData.user.cpf,
+            email: pyData.user.email,
+            matricula: pyData.user.matricula,
+            faceFingerprintId: pyData.user.faceFingerprintId,
+            faceQualityScore: pyData.user.faceQualityScore,
+            faceImageDataUrl: pyData.user.faceImageDataUrl,
+            livenessVerified: true,
+            faceLocked: pyData.user.faceLocked,
+          });
+          setLoggedUserEmail(pyData.user.email);
+          setProfile(saved);
+          populateFormFromProfile(saved);
+          setLoggedEmail(pyData.user.email);
+          setAuthPassword("");
+          setActiveTab("ingressos");
+          setStatusToast(`Bem-vindo(a), ${pyData.user.nome}!`);
+          return;
+        }
+      } catch {
+        // Fallback to local stored account if Python API is unreachable
+      }
+
+      // Local fallback check
       const userRes = await loginUserAccount(authEmail, authPassword);
       if (!userRes.ok) {
         setAuthError(userRes.error);
@@ -753,6 +912,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       populateFormFromProfile(updatedProfile);
       setLoggedEmail(userRes.account.email);
       setAuthPassword("");
+      setActiveTab("ingressos");
       setStatusToast(`Bem-vindo(a), ${userRes.account.nome}!`);
     } catch {
       setAuthError("Não foi possível realizar o login.");
@@ -885,6 +1045,15 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       ? notifications
       : notifications.filter((n) => n.categoria === notifFilter);
 
+  // Mandatory Entry Gate: visitors MUST login (User or ADM) or complete Registration + Facial Recognition first
+  const requiresOnboardingGate =
+    sessionChecked && !loggedEmail && !adminSessionEmail;
+  const effectiveTab: AppTab = requiresOnboardingGate
+    ? pendingRegistration
+      ? "biometria"
+      : "perfil"
+    : activeTab;
+
   return (
     <div className="min-h-screen w-full bg-[#faf8ff] text-[#131b2e] flex flex-col justify-between pb-24 md:pb-12 select-none">
       <canvas ref={canvasRef} className="hidden" />
@@ -945,42 +1114,44 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
             </div>
           </button>
 
-          {/* Center: Desktop Navigation Links (md+) */}
-          <nav
-            aria-label="Navegação desktop"
-            className="hidden md:flex items-center gap-1 lg:gap-2 bg-[#f2f3ff] p-1.5 rounded-2xl"
-          >
-            {(
-              [
-                { id: "ingressos", label: "Ingressos" },
-                { id: "biometria", label: "Biometria" },
-                { id: "notificacoes", label: "Notificações" },
-                { id: "perfil", label: "Perfil" },
-              ] as { id: AppTab; label: string }[]
-            ).map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => handleSwitchTab(item.id)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs cursor-pointer transition-all ${
-                  activeTab === item.id
-                    ? "bg-white text-[#016294] font-extrabold shadow-2xs"
-                    : "text-[#4e5462] hover:text-[#131b2e] hover:bg-white/60 font-semibold"
-                }`}
-              >
-                <span>{item.label}</span>
-              </button>
-            ))}
-            {adminSessionEmail && (
-              <button
-                type="button"
-                onClick={() => router.push("/admin")}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-extrabold bg-[#016294] text-white hover:bg-[#01537e] cursor-pointer transition-all"
-              >
-                <span>Painel ADM</span>
-              </button>
-            )}
-          </nav>
+          {/* Center: Desktop Navigation Links (hidden while user is in mandatory onboarding gate) */}
+          {!requiresOnboardingGate && (
+            <nav
+              aria-label="Navegação desktop"
+              className="hidden md:flex items-center gap-1 lg:gap-2 bg-[#f2f3ff] p-1.5 rounded-2xl"
+            >
+              {(
+                [
+                  { id: "ingressos", label: "Ingressos" },
+                  { id: "biometria", label: "Biometria" },
+                  { id: "notificacoes", label: "Notificações" },
+                  { id: "perfil", label: "Perfil" },
+                ] as { id: AppTab; label: string }[]
+              ).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => handleSwitchTab(item.id)}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs cursor-pointer transition-all ${
+                    effectiveTab === item.id
+                      ? "bg-white text-[#016294] font-extrabold shadow-2xs"
+                      : "text-[#4e5462] hover:text-[#131b2e] hover:bg-white/60 font-semibold"
+                  }`}
+                >
+                  <span>{item.label}</span>
+                </button>
+              ))}
+              {adminSessionEmail && (
+                <button
+                  type="button"
+                  onClick={() => router.push("/admin")}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-extrabold bg-[#016294] text-white hover:bg-[#01537e] cursor-pointer transition-all"
+                >
+                  <span>Painel ADM</span>
+                </button>
+              )}
+            </nav>
+          )}
 
           {/* Right: Bell & User Avatar (Displays real captured photo or neutral user icon) */}
           <div className="flex items-center gap-3 sm:gap-4">
@@ -1079,7 +1250,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         {/* =========================================================
             SCREEN 1: INGRESSOS (100% Real User-Entered Data)
            ========================================================= */}
-        {activeTab === "ingressos" && (
+        {effectiveTab === "ingressos" && (
           <>
             <div className="flex items-start justify-between gap-3">
               <div className="flex flex-col">
@@ -1881,7 +2052,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         {/* =========================================================
             SCREEN 2: BIOMETRIA FACIAL (Real Device Camera & Real Metrics)
            ========================================================= */}
-        {activeTab === "biometria" && (
+        {effectiveTab === "biometria" && (
           <div className="flex flex-col">
             {pendingRegistration && (
               <div className="mb-5 rounded-2xl bg-[#016294] text-white p-4 sm:p-5 shadow-md flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -2075,13 +2246,53 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     </div>
                   )}
 
+                  {/* Python OpenCV Real Validation Rejection Reasons */}
+                  {faceRejectionReasons.length > 0 && (
+                    <div className="mt-3 rounded-2xl bg-[#ffdad6] border border-[#93000a]/25 p-3.5 flex flex-col gap-1.5">
+                      <p className="text-xs font-extrabold text-[#93000a] uppercase">
+                        ✕ Reconhecimento Facial Reprovado — Corrija para
+                        validar:
+                      </p>
+                      <ul className="list-disc pl-4 text-xs font-semibold text-[#7a0008] flex flex-col gap-1">
+                        {faceRejectionReasons.map((reason, idx) => (
+                          <li key={idx}>{reason}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Python OpenCV 6-Point Computer Vision Checklist */}
+                  {faceChecks && (
+                    <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {Object.entries(faceChecks).map(([key, check]) => (
+                        <div
+                          key={key}
+                          className={`rounded-xl px-3 py-2 text-[10.5px] font-bold border ${
+                            check.ok
+                              ? "bg-[#d4f4e4] border-[#006c4a]/20 text-[#005236]"
+                              : "bg-[#ffdad6] border-[#93000a]/20 text-[#93000a]"
+                          }`}
+                        >
+                          <span className="block font-extrabold">
+                            {check.ok ? "✓" : "✕"}{" "}
+                            {key.replace(/_/g, " ").toUpperCase()}
+                          </span>
+                          <span className="text-[10px] font-medium opacity-90">
+                            {check.detalhe}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   {/* Active Camera Controls */}
                   {cameraActive && (
                     <div className="mt-3.5 flex flex-wrap items-center gap-2.5">
                       <button
                         type="button"
+                        disabled={validatingFace}
                         onClick={handleCapturePhoto}
-                        className="flex-1 bg-[#006c4a] hover:bg-[#00583c] text-white font-extrabold text-xs uppercase tracking-wider py-3.5 px-4 rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                        className="flex-1 bg-[#006c4a] hover:bg-[#00583c] disabled:opacity-60 text-white font-extrabold text-xs uppercase tracking-wider py-3.5 px-4 rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-colors"
                       >
                         <svg
                           className="w-4 h-4"
@@ -2096,9 +2307,11 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                           <circle cx="12" cy="12" r="4" />
                         </svg>
                         <span>
-                          {cameraMode === "test"
-                            ? "Confirmar Leitura Biométrica"
-                            : "Capturar e Salvar Biometria"}
+                          {validatingFace
+                            ? "Validando no Back-end Python..."
+                            : cameraMode === "test"
+                              ? "Validar Rosto na Câmera"
+                              : "Capturar e Validar Biometria"}
                         </span>
                       </button>
                       <button
@@ -2247,29 +2460,59 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => startCamera("capture", facingMode)}
-                    className="mt-4 w-full bg-[#faf8ff] hover:bg-[#f2f3ff] border border-[#eceaf6] text-[#131b2e] rounded-xl py-3 px-4 flex items-center justify-center gap-2 text-xs font-extrabold transition-colors cursor-pointer"
-                  >
-                    <svg
-                      className="w-4 h-4 text-[#016294] shrink-0"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2.2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
+                  {/* Immutable One-Time Registration Rule: Cannot change face once registered */}
+                  {hasFaceRegistered && !pendingRegistration ? (
+                    <div className="mt-4 w-full bg-[#f2f3ff] border border-[#006c4a]/25 text-[#005236] rounded-xl py-3 px-4 flex items-center justify-center gap-2 text-xs font-extrabold text-center">
+                      <svg
+                        className="w-4 h-4 text-[#006c4a] shrink-0"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <rect
+                          x="3"
+                          y="11"
+                          width="18"
+                          height="11"
+                          rx="2"
+                          ry="2"
+                        />
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                      </svg>
+                      <span>
+                        Biometria Facial Definitiva (Cadastro Único
+                        {profile?.faceFingerprintId
+                          ? ` • ${profile.faceFingerprintId}`
+                          : ""}
+                        ) — Não pode ser alterada
+                      </span>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => startCamera("capture", facingMode)}
+                      className="mt-4 w-full bg-[#faf8ff] hover:bg-[#f2f3ff] border border-[#eceaf6] text-[#131b2e] rounded-xl py-3 px-4 flex items-center justify-center gap-2 text-xs font-extrabold transition-colors cursor-pointer"
                     >
-                      <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" />
-                      <circle cx="12" cy="13" r="3" />
-                    </svg>
-                    <span>
-                      {hasFaceRegistered
-                        ? "Recadastrar Face / Nova Foto"
-                        : "Cadastrar Face / Nova Foto"}
-                    </span>
-                  </button>
+                      <svg
+                        className="w-4 h-4 text-[#016294] shrink-0"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" />
+                        <circle cx="12" cy="13" r="3" />
+                      </svg>
+                      <span>
+                        Ativar Câmera para Cadastro Facial Obrigatório
+                      </span>
+                    </button>
+                  )}
                 </section>
 
                 <button
@@ -2436,7 +2679,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         {/* =========================================================
             SCREEN 3: NOTIFICAÇÕES (100% Real User Events & Notices)
            ========================================================= */}
-        {activeTab === "notificacoes" && (
+        {effectiveTab === "notificacoes" && (
           <div className="flex flex-col">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -2750,7 +2993,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         {/* =========================================================
             SCREEN 4: PERFIL (Admin Active Session / Login-Cadastro / User Profile)
            ========================================================= */}
-        {activeTab === "perfil" && adminSessionEmail && !loggedEmail && (
+        {effectiveTab === "perfil" && adminSessionEmail && !loggedEmail && (
           <div className="w-full max-w-lg mx-auto py-4 sm:py-8">
             <section className="bg-white rounded-[28px] shadow-[0_8px_32px_rgba(19,27,46,0.08)] p-6 sm:p-8 border border-[#eceaf6] text-center">
               <div className="w-14 h-14 mx-auto rounded-2xl bg-[#016294] text-white flex items-center justify-center font-extrabold text-sm mb-3">
@@ -2784,7 +3027,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
           </div>
         )}
 
-        {activeTab === "perfil" && !loggedEmail && !adminSessionEmail && (
+        {effectiveTab === "perfil" && !loggedEmail && !adminSessionEmail && (
           <div className="w-full max-w-lg mx-auto py-4 sm:py-8">
             <section className="bg-white rounded-[28px] shadow-[0_8px_32px_rgba(19,27,46,0.08)] p-6 sm:p-8 border border-[#eceaf6]">
               <div className="text-center mb-6">
@@ -2997,7 +3240,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
           </div>
         )}
 
-        {activeTab === "perfil" && loggedEmail && (
+        {effectiveTab === "perfil" && loggedEmail && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 xl:gap-8 items-start">
             {/* Left Column: Member Identity & Carteira do Torcedor */}
             <div className="lg:col-span-5 xl:col-span-4 flex flex-col">
@@ -4347,142 +4590,144 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         </div>
       )}
 
-      {/* Mobile Bottom Navigation Bar */}
-      <nav
-        aria-label="Navegação principal mobile"
-        className={`md:hidden fixed bottom-0 inset-x-0 z-30 bg-[#faf8ff]/95 backdrop-blur-xs border-t border-[#ebe9f5] px-2 py-2.5 grid items-center ${
-          adminSessionEmail ? "grid-cols-5" : "grid-cols-4"
-        }`}
-      >
-        <button
-          type="button"
-          onClick={() => handleSwitchTab("ingressos")}
-          className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
-            activeTab === "ingressos"
-              ? "text-[#016294] font-extrabold"
-              : "text-[#4e5462] font-semibold"
+      {/* Mobile Bottom Navigation Bar (hidden during mandatory onboarding gate) */}
+      {!requiresOnboardingGate && (
+        <nav
+          aria-label="Navegação principal mobile"
+          className={`md:hidden fixed bottom-0 inset-x-0 z-30 bg-[#faf8ff]/95 backdrop-blur-xs border-t border-[#ebe9f5] px-2 py-2.5 grid items-center ${
+            adminSessionEmail ? "grid-cols-5" : "grid-cols-4"
           }`}
         >
-          <svg
-            className="w-5 h-5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={activeTab === "ingressos" ? "2.2" : "1.9"}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z" />
-            <path d="M13 5v2" />
-            <path d="M13 17v2" />
-            <path d="M13 11v2" />
-          </svg>
-          <span className="text-[10.5px] tracking-tight">Ingressos</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => handleSwitchTab("biometria")}
-          className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
-            activeTab === "biometria"
-              ? "text-[#016294] font-extrabold"
-              : "text-[#4e5462] font-semibold"
-          }`}
-        >
-          <svg
-            className="w-5 h-5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={activeTab === "biometria" ? "2.2" : "1.9"}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4" />
-            <path d="M14 13.12c0 2.38 0 6.38-1 8.88" />
-            <path d="M17.29 21.02c.12-.6.43-2.3.5-3.02" />
-            <path d="M2 12a10 10 0 0 1 18-6" />
-            <path d="M2 16h.01" />
-            <path d="M21.8 16c.2-2 .131-5.354 0-6" />
-            <path d="M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2" />
-            <path d="M8.65 22c.21-.66.45-1.32.57-2" />
-            <path d="M9 6.8a6 6 0 0 1 9 5.2v2" />
-          </svg>
-          <span className="text-[10.5px] tracking-tight">Biometria</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => handleSwitchTab("notificacoes")}
-          className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
-            activeTab === "notificacoes"
-              ? "text-[#016294] font-extrabold"
-              : "text-[#4e5462] font-semibold"
-          }`}
-        >
-          <svg
-            className="w-5 h-5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={activeTab === "notificacoes" ? "2.2" : "1.9"}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-            <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-          </svg>
-          <span className="text-[10.5px] tracking-tight">Notificações</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => handleSwitchTab("perfil")}
-          className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
-            activeTab === "perfil"
-              ? "text-[#016294] font-extrabold"
-              : "text-[#4e5462] font-semibold"
-          }`}
-        >
-          <svg
-            className="w-5 h-5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={activeTab === "perfil" ? "2.2" : "1.9"}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <circle cx="12" cy="8" r="4" />
-            <path d="M5 20a7 7 0 0 1 14 0" />
-          </svg>
-          <span className="text-[10.5px] tracking-tight">Perfil</span>
-        </button>
-
-        {adminSessionEmail && (
           <button
             type="button"
-            onClick={() => router.push("/admin")}
-            className="flex flex-col items-center justify-center gap-1 text-[#016294] font-extrabold cursor-pointer"
+            onClick={() => handleSwitchTab("ingressos")}
+            className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
+              activeTab === "ingressos"
+                ? "text-[#016294] font-extrabold"
+                : "text-[#4e5462] font-semibold"
+            }`}
           >
             <svg
               className="w-5 h-5"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
-              strokeWidth="2.2"
+              strokeWidth={activeTab === "ingressos" ? "2.2" : "1.9"}
               strokeLinecap="round"
               strokeLinejoin="round"
             >
-              <rect x="3" y="3" width="7" height="7" />
-              <rect x="14" y="3" width="7" height="7" />
-              <rect x="14" y="14" width="7" height="7" />
-              <rect x="3" y="14" width="7" height="7" />
+              <path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z" />
+              <path d="M13 5v2" />
+              <path d="M13 17v2" />
+              <path d="M13 11v2" />
             </svg>
-            <span className="text-[10px] tracking-tight">Painel ADM</span>
+            <span className="text-[10.5px] tracking-tight">Ingressos</span>
           </button>
-        )}
-      </nav>
+
+          <button
+            type="button"
+            onClick={() => handleSwitchTab("biometria")}
+            className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
+              activeTab === "biometria"
+                ? "text-[#016294] font-extrabold"
+                : "text-[#4e5462] font-semibold"
+            }`}
+          >
+            <svg
+              className="w-5 h-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={activeTab === "biometria" ? "2.2" : "1.9"}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4" />
+              <path d="M14 13.12c0 2.38 0 6.38-1 8.88" />
+              <path d="M17.29 21.02c.12-.6.43-2.3.5-3.02" />
+              <path d="M2 12a10 10 0 0 1 18-6" />
+              <path d="M2 16h.01" />
+              <path d="M21.8 16c.2-2 .131-5.354 0-6" />
+              <path d="M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2" />
+              <path d="M8.65 22c.21-.66.45-1.32.57-2" />
+              <path d="M9 6.8a6 6 0 0 1 9 5.2v2" />
+            </svg>
+            <span className="text-[10.5px] tracking-tight">Biometria</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleSwitchTab("notificacoes")}
+            className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
+              activeTab === "notificacoes"
+                ? "text-[#016294] font-extrabold"
+                : "text-[#4e5462] font-semibold"
+            }`}
+          >
+            <svg
+              className="w-5 h-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={activeTab === "notificacoes" ? "2.2" : "1.9"}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+              <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+            </svg>
+            <span className="text-[10.5px] tracking-tight">Notificações</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleSwitchTab("perfil")}
+            className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
+              activeTab === "perfil"
+                ? "text-[#016294] font-extrabold"
+                : "text-[#4e5462] font-semibold"
+            }`}
+          >
+            <svg
+              className="w-5 h-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={activeTab === "perfil" ? "2.2" : "1.9"}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="12" cy="8" r="4" />
+              <path d="M5 20a7 7 0 0 1 14 0" />
+            </svg>
+            <span className="text-[10.5px] tracking-tight">Perfil</span>
+          </button>
+
+          {adminSessionEmail && (
+            <button
+              type="button"
+              onClick={() => router.push("/admin")}
+              className="flex flex-col items-center justify-center gap-1 text-[#016294] font-extrabold cursor-pointer"
+            >
+              <svg
+                className="w-5 h-5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <rect x="3" y="3" width="7" height="7" />
+                <rect x="14" y="3" width="7" height="7" />
+                <rect x="14" y="14" width="7" height="7" />
+                <rect x="3" y="14" width="7" height="7" />
+              </svg>
+              <span className="text-[10px] tracking-tight">Painel ADM</span>
+            </button>
+          )}
+        </nav>
+      )}
     </div>
   );
 }

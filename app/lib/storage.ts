@@ -18,11 +18,13 @@ export interface BiometricProfile {
   email: string;
   telefone: string;
   faceImageDataUrl: string;
+  faceFingerprintId: string;
   faceHashSha256: string;
   faceQualityScore: number;
   imageWidth: number;
   imageHeight: number;
   livenessVerified: boolean;
+  faceLocked: boolean;
   dependentes: DependentMember[];
   acessibilidade: string;
   alertasPortao: boolean;
@@ -174,6 +176,8 @@ export async function saveBiometricProfile(
     email: (partial.email ?? existing?.email ?? "").trim(),
     telefone: (partial.telefone ?? existing?.telefone ?? "").trim(),
     faceImageDataUrl: nextFaceUrl,
+    faceFingerprintId:
+      partial.faceFingerprintId ?? existing?.faceFingerprintId ?? "",
     faceHashSha256,
     faceQualityScore:
       partial.faceQualityScore ?? existing?.faceQualityScore ?? 0,
@@ -183,6 +187,8 @@ export async function saveBiometricProfile(
       partial.livenessVerified ??
       existing?.livenessVerified ??
       Boolean(nextFaceUrl),
+    faceLocked:
+      partial.faceLocked ?? existing?.faceLocked ?? Boolean(nextFaceUrl),
     dependentes: partial.dependentes ?? existing?.dependentes ?? [],
     acessibilidade: (
       partial.acessibilidade ??
@@ -334,6 +340,15 @@ export function markAllNotificationsRead(): SystemNotification[] {
 export function clearNotifications(): void {
   if (typeof window !== "undefined") {
     window.localStorage.removeItem(STORAGE_KEYS.NOTIFICATIONS);
+  }
+}
+
+export function setLoggedUserEmail(email: string): void {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(
+      STORAGE_KEYS.SESSION_EMAIL,
+      email.trim().toLowerCase(),
+    );
   }
 }
 
