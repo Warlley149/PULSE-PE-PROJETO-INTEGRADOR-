@@ -120,6 +120,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       {
         status: "pendente" | "aprovado" | "reprovado";
         reviewedAt?: string;
+        reviewedBy?: string;
         motivoReprovacao?: string;
       }
     >
@@ -225,7 +226,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       try {
         const codesParam = savedTickets.map((t) => t.codigoIngresso).join(",");
         const res = await fetch(
-          `/api/ingressos?codigos=${encodeURIComponent(codesParam)}`,
+          `/api/ingressos?codigos=${encodeURIComponent(codesParam)}&_t=${Date.now()}`,
           { cache: "no-store" },
         );
         if (res.ok) {
@@ -234,6 +235,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
               codigo: string;
               status: "pendente" | "aprovado" | "reprovado";
               reviewedAt?: string;
+              reviewedBy?: string;
               motivoReprovacao?: string;
             }>;
           };
@@ -243,6 +245,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
               {
                 status: "pendente" | "aprovado" | "reprovado";
                 reviewedAt?: string;
+                reviewedBy?: string;
                 motivoReprovacao?: string;
               }
             > = {};
@@ -250,6 +253,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
               next[item.codigo] = {
                 status: item.status,
                 reviewedAt: item.reviewedAt,
+                reviewedBy: item.reviewedBy,
                 motivoReprovacao: item.motivoReprovacao,
               };
             }
@@ -1384,14 +1388,72 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                 </div>
               </div>
 
+              {/* Real Admin Approval / Rejection Status Banner on Active Ticket Card */}
+              {activeTicket &&
+                ticketStatuses[activeTicket.codigoIngresso]?.status ===
+                  "reprovado" && (
+                  <div className="mx-4 sm:mx-6 md:mx-8 mt-4 rounded-2xl bg-[#ffdad6] border border-[#93000a]/30 p-4 text-left">
+                    <p className="text-xs sm:text-sm font-extrabold text-[#93000a] uppercase">
+                      ✕ ENTRADA BLOQUEADA — INGRESSO REPROVADO PELO ADM
+                    </p>
+                    <p className="text-xs font-semibold text-[#93000a] mt-1">
+                      Motivo:{" "}
+                      {ticketStatuses[activeTicket.codigoIngresso]
+                        .motivoReprovacao ||
+                        "Entrada não autorizada pela administração."}
+                    </p>
+                    <p className="text-[11px] text-[#7a0008] mt-1">
+                      Este ingresso não permite entrada na arena. Procure o
+                      suporte ou aguarde nova liberação do administrador.
+                    </p>
+                  </div>
+                )}
+
+              {activeTicket &&
+                ticketStatuses[activeTicket.codigoIngresso]?.status ===
+                  "aprovado" && (
+                  <div className="mx-4 sm:mx-6 md:mx-8 mt-4 rounded-2xl bg-[#d4f4e4] border border-[#006c4a]/30 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs sm:text-sm font-extrabold text-[#005236] uppercase">
+                        ✓ ENTRADA APROVADA — VOCÊ PODE ENTRAR NA ARENA
+                      </p>
+                      <p className="text-[11px] font-semibold text-[#006c4a] mt-0.5">
+                        Validado pelo ADM • Portão {activeTicket.portao} (
+                        {activeTicket.setor})
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTicketForCodeModal(activeTicket);
+                        setActiveModal("codigo-arena");
+                      }}
+                      className="bg-[#006c4a] hover:bg-[#00583c] text-white font-extrabold text-xs px-4 py-2.5 rounded-xl cursor-pointer shrink-0 transition-colors"
+                    >
+                      Ver Comprovante de Entrada
+                    </button>
+                  </div>
+                )}
+
               <div className="px-4 sm:px-6 md:px-8 mt-4 sm:mt-6 flex flex-col sm:flex-row gap-3">
                 <button
                   type="button"
+                  disabled={
+                    Boolean(activeTicket) &&
+                    ticketStatuses[activeTicket!.codigoIngresso]?.status ===
+                      "reprovado"
+                  }
                   onClick={() => handleSwitchTab("biometria")}
-                  className="flex-1 bg-[#016294] hover:bg-[#01537e] active:scale-[0.99] transition-all text-white rounded-xl sm:rounded-2xl py-3.5 sm:py-4 px-4 flex items-center justify-center gap-2.5 shadow-xs cursor-pointer"
+                  className={`flex-1 transition-all rounded-xl sm:rounded-2xl py-3.5 sm:py-4 px-4 flex items-center justify-center gap-2.5 shadow-xs ${
+                    activeTicket &&
+                    ticketStatuses[activeTicket.codigoIngresso]?.status ===
+                      "reprovado"
+                      ? "bg-[#d5d8e2] text-[#4e5462] cursor-not-allowed"
+                      : "bg-[#016294] hover:bg-[#01537e] active:scale-[0.99] text-white cursor-pointer"
+                  }`}
                 >
                   <svg
-                    className="w-4 h-4 sm:w-5 sm:h-5 text-white shrink-0"
+                    className="w-4 h-4 sm:w-5 sm:h-5 shrink-0"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
@@ -1407,7 +1469,11 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     <path d="M8.5 16.5a4.5 4.5 0 0 1 7 0" />
                   </svg>
                   <span className="text-[11.5px] sm:text-xs md:text-sm font-extrabold uppercase tracking-[0.04em]">
-                    ACESSAR PASSE FACIAL DIGITAL
+                    {activeTicket &&
+                    ticketStatuses[activeTicket.codigoIngresso]?.status ===
+                      "reprovado"
+                      ? "ENTRADA BLOQUEADA NA CATRACA"
+                      : "ACESSAR PASSE FACIAL DIGITAL"}
                   </span>
                 </button>
 
@@ -1418,7 +1484,15 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                       setTicketForCodeModal(activeTicket);
                       setActiveModal("codigo-arena");
                     }}
-                    className="bg-[#e6f0f5] hover:bg-[#d5e7f0] active:scale-[0.99] transition-all text-[#016294] rounded-xl sm:rounded-2xl py-3.5 sm:py-4 px-5 flex items-center justify-center gap-2 cursor-pointer shrink-0"
+                    className={`active:scale-[0.99] transition-all rounded-xl sm:rounded-2xl py-3.5 sm:py-4 px-5 flex items-center justify-center gap-2 cursor-pointer shrink-0 ${
+                      ticketStatuses[activeTicket.codigoIngresso]?.status ===
+                      "aprovado"
+                        ? "bg-[#006c4a] hover:bg-[#00583c] text-white"
+                        : ticketStatuses[activeTicket.codigoIngresso]
+                              ?.status === "reprovado"
+                          ? "bg-[#ffdad6] text-[#93000a]"
+                          : "bg-[#e6f0f5] hover:bg-[#d5e7f0] text-[#016294]"
+                    }`}
                   >
                     <svg
                       className="w-4 h-4 sm:w-5 sm:h-5 shrink-0"
@@ -1435,7 +1509,13 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                       <rect x="3" y="14" width="7" height="7" />
                     </svg>
                     <span className="text-[11.5px] sm:text-xs md:text-sm font-extrabold uppercase tracking-[0.04em]">
-                      VER CÓDIGO ({activeTicket.codigoIngresso})
+                      {ticketStatuses[activeTicket.codigoIngresso]?.status ===
+                      "aprovado"
+                        ? "COMPROVANTE ✓"
+                        : ticketStatuses[activeTicket.codigoIngresso]
+                              ?.status === "reprovado"
+                          ? "VER MOTIVO ✕"
+                          : `VER CÓDIGO (${activeTicket.codigoIngresso})`}
                     </span>
                   </button>
                 )}
@@ -1578,6 +1658,15 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                         </button>
                       </div>
 
+                      {ticketStatuses[t.codigoIngresso]?.status ===
+                        "reprovado" && (
+                        <div className="rounded-xl bg-[#ffdad6] px-3 py-2 text-[11px] font-bold text-[#93000a]">
+                          Entrada bloqueada:{" "}
+                          {ticketStatuses[t.codigoIngresso].motivoReprovacao ||
+                            "Reprovado pelo ADM"}
+                        </div>
+                      )}
+
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
@@ -1586,9 +1675,23 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                             setTicketForCodeModal(t);
                             setActiveModal("codigo-arena");
                           }}
-                          className="flex-1 bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs py-2.5 px-3 rounded-xl transition-colors cursor-pointer"
+                          className={`flex-1 font-extrabold text-xs py-2.5 px-3 rounded-xl transition-colors cursor-pointer ${
+                            ticketStatuses[t.codigoIngresso]?.status ===
+                            "aprovado"
+                              ? "bg-[#006c4a] hover:bg-[#00583c] text-white"
+                              : ticketStatuses[t.codigoIngresso]?.status ===
+                                  "reprovado"
+                                ? "bg-[#93000a] text-white"
+                                : "bg-[#016294] hover:bg-[#01537e] text-white"
+                          }`}
                         >
-                          Abrir QR Code / Catraca
+                          {ticketStatuses[t.codigoIngresso]?.status ===
+                          "aprovado"
+                            ? "Ver Comprovante ✓"
+                            : ticketStatuses[t.codigoIngresso]?.status ===
+                                "reprovado"
+                              ? "Ver Motivo da Reprovação"
+                              : "Abrir QR Code / Catraca"}
                         </button>
                         <button
                           type="button"
@@ -3910,11 +4013,24 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       {activeModal === "codigo-arena" && ticketForCodeModal && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl my-auto flex flex-col items-center text-center">
+            {/* Top Status Badge inside Modal */}
             <div className="w-full flex items-center justify-between mb-3">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-[#89f5c8] px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider text-[#005236]">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#005236]" />
-                ACESSO LIBERADO • ARENA
-              </span>
+              {ticketStatuses[ticketForCodeModal.codigoIngresso]?.status ===
+              "reprovado" ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-[#ffdad6] px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider text-[#93000a]">
+                  ✕ ACESSO BLOQUEADO • REPROVADO
+                </span>
+              ) : ticketStatuses[ticketForCodeModal.codigoIngresso]?.status ===
+                "aprovado" ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-[#006c4a] px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider text-white">
+                  ✓ COMPROVANTE • ENTRADA LIBERADA
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-[#89f5c8] px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider text-[#005236]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#005236]" />
+                  AGUARDANDO VALIDAÇÃO NA ARENA
+                </span>
+              )}
               <button
                 type="button"
                 onClick={() => setActiveModal(null)}
@@ -3931,43 +4047,62 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
               {ticketForCodeModal.estadio} • {ticketForCodeModal.dataHorario}
             </p>
 
-            {/* Real Scannable ISO/IEC 18004 QR Code & Linear Barcode */}
-            <div className="my-5 w-full bg-[#f2f3ff] rounded-2xl p-5 flex flex-col items-center">
-              <TicketCodeVisual
-                code={ticketForCodeModal.codigoIngresso}
-                validationUrl={buildValidationUrl(ticketForCodeModal)}
-                size={196}
-              />
-              <p className="text-[10.5px] text-[#4e5462] mt-2.5">
-                Apresente este QR Code ao administrador na entrada da arena para
-                validação e liberação da catraca.
-              </p>
-            </div>
-
+            {/* Conditional Center Area: Blocked if Rejected, Official Receipt if Approved, QR Code if Pending */}
             {ticketStatuses[ticketForCodeModal.codigoIngresso]?.status ===
-              "aprovado" && (
-              <div className="w-full mb-4 rounded-xl bg-[#d4f4e4] border border-[#006c4a]/25 p-3 text-xs font-extrabold text-[#005236]">
-                ✓ Entrada APROVADA pelo ADM
-                {ticketStatuses[ticketForCodeModal.codigoIngresso]?.reviewedAt
-                  ? ` às ${new Date(
-                      ticketStatuses[ticketForCodeModal.codigoIngresso]
-                        .reviewedAt!,
-                    ).toLocaleTimeString("pt-BR", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}`
-                  : ""}
+            "reprovado" ? (
+              <div className="my-5 w-full bg-[#ffdad6] border-2 border-[#93000a]/30 rounded-2xl p-6 flex flex-col items-center">
+                <div className="w-14 h-14 rounded-full bg-[#93000a] text-white flex items-center justify-center mb-3 text-xl font-extrabold">
+                  ✕
+                </div>
+                <p className="text-sm font-extrabold text-[#93000a] uppercase">
+                  Entrada Não Autorizada
+                </p>
+                <p className="text-xs font-bold text-[#7a0008] mt-1.5">
+                  Motivo:{" "}
+                  {ticketStatuses[ticketForCodeModal.codigoIngresso]
+                    .motivoReprovacao ||
+                    "Ingresso reprovado pela administração."}
+                </p>
+                <p className="text-[11px] text-[#7a0008] mt-2">
+                  O QR Code foi bloqueado na catraca. Não é possível acessar a
+                  arena com este bilhete.
+                </p>
               </div>
-            )}
+            ) : (
+              <div className="my-5 w-full bg-[#f2f3ff] rounded-2xl p-5 flex flex-col items-center">
+                {ticketStatuses[ticketForCodeModal.codigoIngresso]?.status ===
+                  "aprovado" && (
+                  <div className="w-full mb-3 rounded-xl bg-[#d4f4e4] border border-[#006c4a]/25 p-3 text-xs font-extrabold text-[#005236]">
+                    ✓ Comprovante Oficial — Você está autorizado a entrar na
+                    arena!
+                    {ticketStatuses[ticketForCodeModal.codigoIngresso]
+                      .reviewedAt && (
+                      <span className="block text-[10.5px] font-semibold text-[#006c4a] mt-0.5">
+                        Aprovado em{" "}
+                        {new Date(
+                          ticketStatuses[ticketForCodeModal.codigoIngresso]
+                            .reviewedAt!,
+                        ).toLocaleString("pt-BR")}
+                        {ticketStatuses[ticketForCodeModal.codigoIngresso]
+                          .reviewedBy
+                          ? ` por ${ticketStatuses[ticketForCodeModal.codigoIngresso].reviewedBy}`
+                          : ""}
+                      </span>
+                    )}
+                  </div>
+                )}
 
-            {ticketStatuses[ticketForCodeModal.codigoIngresso]?.status ===
-              "reprovado" && (
-              <div className="w-full mb-4 rounded-xl bg-[#ffdad6] border border-[#93000a]/25 p-3 text-xs font-extrabold text-[#93000a]">
-                ✕ Entrada REPROVADA pelo ADM
-                {ticketStatuses[ticketForCodeModal.codigoIngresso]
-                  ?.motivoReprovacao
-                  ? `: ${ticketStatuses[ticketForCodeModal.codigoIngresso].motivoReprovacao}`
-                  : ""}
+                <TicketCodeVisual
+                  code={ticketForCodeModal.codigoIngresso}
+                  validationUrl={buildValidationUrl(ticketForCodeModal)}
+                  size={196}
+                />
+                <p className="text-[10.5px] text-[#4e5462] mt-2.5">
+                  {ticketStatuses[ticketForCodeModal.codigoIngresso]?.status ===
+                  "aprovado"
+                    ? "Comprovante de acesso validado. Apresente na catraca se solicitado."
+                    : "Apresente este QR Code ao administrador na entrada da arena para validação e liberação da catraca."}
+                </p>
               </div>
             )}
 

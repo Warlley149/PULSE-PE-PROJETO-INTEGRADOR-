@@ -42,7 +42,7 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
       codigo?: string;
-      decision?: "aprovado" | "reprovado";
+      decision?: "aprovado" | "reprovado" | "pendente";
       motivoReprovacao?: string;
       jogo?: string;
       estadio?: string;
@@ -62,9 +62,16 @@ export async function POST(request: Request) {
       );
     }
 
-    if (body.decision !== "aprovado" && body.decision !== "reprovado") {
+    if (
+      body.decision !== "aprovado" &&
+      body.decision !== "reprovado" &&
+      body.decision !== "pendente"
+    ) {
       return NextResponse.json(
-        { error: "Decisão inválida. Informe 'aprovado' ou 'reprovado'." },
+        {
+          error:
+            "Decisão inválida. Informe 'aprovado', 'reprovado' ou 'pendente'.",
+        },
         { status: 400 },
       );
     }

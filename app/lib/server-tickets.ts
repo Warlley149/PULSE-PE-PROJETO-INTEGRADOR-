@@ -74,7 +74,7 @@ export function upsertServerTicket(
 
 export function reviewServerTicket(params: {
   codigo: string;
-  decision: "aprovado" | "reprovado";
+  decision: "aprovado" | "reprovado" | "pendente";
   motivoReprovacao?: string;
   reviewedBy: string;
   fallbackMeta?: Partial<ServerTicketRecord>;
@@ -111,8 +111,8 @@ export function reviewServerTicket(params: {
             params.motivoReprovacao || "Entrada reprovada pela administração."
           ).trim()
         : undefined,
-    reviewedAt: now,
-    reviewedBy: params.reviewedBy,
+    reviewedAt: params.decision === "pendente" ? undefined : now,
+    reviewedBy: params.decision === "pendente" ? undefined : params.reviewedBy,
   };
 
   getStore().set(code, updated);

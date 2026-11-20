@@ -42,7 +42,18 @@ export function AdminPortalClient({
   const [manualCode, setManualCode] = useState<string>(initialScannedCode);
   const [selectedTicket, setSelectedTicket] =
     useState<ServerTicketRecord | null>(null);
+  const [receiptTicket, setReceiptTicket] = useState<ServerTicketRecord | null>(
+    null,
+  );
+  const [rejectModalTicket, setRejectModalTicket] =
+    useState<ServerTicketRecord | null>(null);
+  const [receiptTicket, setReceiptTicket] = useState<ServerTicketRecord | null>(
+    null,
+  );
+  const [rejectModalTicket, setRejectModalTicket] =
+    useState<ServerTicketRecord | null>(null);
   const [rejectionReason, setRejectionReason] = useState<string>("");
+  const [lastUpdatedLabel, setLastUpdatedLabel] = useState<string>("");
   const [actionMessage, setActionMessage] = useState<{
     type: "success" | "error";
     text: string;
@@ -84,10 +95,12 @@ export function AdminPortalClient({
   }, []);
 
   const fetchTickets = useCallback(
-    async (highlightCode?: string) => {
+    async (highlightCode?: string, showToast = false) => {
       setLoadingTickets(true);
       try {
-        const res = await fetch("/api/ingressos", { cache: "no-store" });
+        const res = await fetch(`/api/ingressos?_t=${Date.now()}`, {
+          cache: "no-store",
+        });
         if (res.status === 401) {
           setAuthenticated(false);
           return;
@@ -98,6 +111,13 @@ export function AdminPortalClient({
           };
           const list = Array.isArray(data.tickets) ? data.tickets : [];
           setTickets(list);
+          setLastUpdatedLabel(
+            new Date().toLocaleTimeString("pt-BR", {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            }),
+          );
 
           const codeToSelect = highlightCode || selectedTicket?.codigo;
           if (codeToSelect) {
@@ -105,6 +125,13 @@ export function AdminPortalClient({
               (t) => t.codigo.toUpperCase() === codeToSelect.toUpperCase(),
             );
             if (match) setSelectedTicket(match);
+          }
+
+          if (showToast) {
+            setActionMessage({
+              type: "success",
+              text: `Lista atualizada (${list.length} bilhete(s) encontrado(s)).`,
+            });
           }
         }
       } finally {
@@ -299,22 +326,25 @@ export function AdminPortalClient({
 
   const handleReviewDecision = async (
     ticket: ServerTicketRecord,
-    decision: "aprovado" | "reprovado",
+    decision: "aprovado" | "reprovado" | "pendente",
+    customReason?: string,
   ) => {
     setSubmittingDecision(true);
     setActionMessage(null);
     try {
+      const reasonToSend =
+        decision === "reprovado"
+          ? (customReason ?? rejectionReason).trim() ||
+            "Entrada reprovada pelo operador da arena."
+          : undefined;
+
       const res = await fetch("/api/ingressos/validar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           codigo: ticket.codigo,
           decision,
-          motivoReprovacao:
-            decision === "reprovado"
-              ? rejectionReason.trim() ||
-                "Entrada reprovada pelo operador da arena."
-              : undefined,
+          motivoReprovacao: reasonToSend,
         }),
       });
 
@@ -337,13 +367,16 @@ export function AdminPortalClient({
       }
 
       setSelectedTicket(data.ticket);
+      setRejectModalTicket(null);
       setRejectionReason("");
       setActionMessage({
         type: "success",
         text:
           decision === "aprovado"
-            ? `Entrada APROVADA para ${data.ticket.codigo} (${data.ticket.titular}).`
-            : `Entrada REPROVADA para ${data.ticket.codigo}.`,
+            ? `Entrada APROVADA para ${data.ticket.codigo} (${data.ticket.titular}). Comprovante liberado.`
+            : decision === "reprovado"
+              ? `Entrada REPROVADA para ${data.ticket.codigo}. Motivo: ${data.ticket.motivoReprovacao}`
+              : `Status de ${data.ticket.codigo} retornado para PENDENTE.`,
       });
       await fetchTickets(data.ticket.codigo);
     } catch {
@@ -787,31 +820,59 @@ export function AdminPortalClient({
                   type="text"
                   value={rejectionReason}
                   onChange={(e) => setRejectionReason(e.target.value)}
-                  placeholder="Motivo caso reprove (opcional)"
+                  placeholder="Motivo da reprovação (aparecerá para o torcedor)"
                   className="w-full rounded-xl bg-white px-3 py-2 text-xs text-[#131b2e] outline-none border border-[#eceaf6]"
                 />
 
-                <div className="grid grid-cols-2 gap-2.5">
-                  <button
-                    type="button"
-                    disabled={submittingDecision}
-                    onClick={() =>
-                      void handleReviewDecision(selectedTicket, "aprovado")
-                    }
-                    className="bg-[#006c4a] hover:bg-[#00583c] disabled:opacity-60 text-white font-extrabold text-xs uppercase py-3 rounded-xl cursor-pointer transition-colors"
-                  >
-                    ✓ Aprovar Entrada
-                  </button>
+                <div className="flex flex-wrap gap-2">
+                  {selectedTicket.status !== "aprovado" && (
+                    <button
+                      type="button"
+                      disabled={submittingDecision}
+                      onClick={() =>
+                        void handleReviewDecision(selectedTicket, "aprovado")
+                      }
+                      className="flex-1 bg-[#006c4a] hover:bg-[#00583c] disabled:opacity-60 text-white font-extrabold text-xs uppercase py-3 px-3 rounded-xl cursor-pointer transition-colors"
+                    >
+                      ✓ Aprovar Entrada
+                    </button>
+                  )}
+
+                  {selectedTicket.status === "aprovado" && (
+                    <button
+                      type="button"
+                      onClick={() => setReceiptTicket(selectedTicket)}
+                      className="flex-1 bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs uppercase py-3 px-3 rounded-xl cursor-pointer transition-colors"
+                    >
+                      Ver Comprovante ✓
+                    </button>
+                  )}
+
                   <button
                     type="button"
                     disabled={submittingDecision}
                     onClick={() =>
                       void handleReviewDecision(selectedTicket, "reprovado")
                     }
-                    className="bg-[#93000a] hover:bg-[#7a0008] disabled:opacity-60 text-white font-extrabold text-xs uppercase py-3 rounded-xl cursor-pointer transition-colors"
+                    className="flex-1 bg-[#93000a] hover:bg-[#7a0008] disabled:opacity-60 text-white font-extrabold text-xs uppercase py-3 px-3 rounded-xl cursor-pointer transition-colors"
                   >
-                    ✕ Reprovar Entrada
+                    {selectedTicket.status === "reprovado"
+                      ? "Atualizar Motivo"
+                      : "✕ Reprovar Entrada"}
                   </button>
+
+                  {selectedTicket.status !== "pendente" && (
+                    <button
+                      type="button"
+                      disabled={submittingDecision}
+                      onClick={() =>
+                        void handleReviewDecision(selectedTicket, "pendente")
+                      }
+                      className="w-full bg-white hover:bg-[#eceaf6] text-[#4e5462] font-bold text-xs py-2.5 px-3 rounded-xl cursor-pointer transition-colors border border-[#d5d8e2]"
+                    >
+                      Voltar para Pendente
+                    </button>
+                  )}
                 </div>
               </div>
             )}
@@ -829,13 +890,21 @@ export function AdminPortalClient({
                   diretamente.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => void fetchTickets()}
-                className="self-start sm:self-auto text-xs font-extrabold text-[#016294] bg-[#e6f0f5] hover:bg-[#d5e7f0] px-3.5 py-2 rounded-xl cursor-pointer transition-colors"
-              >
-                {loadingTickets ? "Atualizando..." : "Atualizar Lista"}
-              </button>
+              <div className="flex items-center gap-2.5 self-start sm:self-auto">
+                {lastUpdatedLabel && (
+                  <span className="text-[10.5px] font-semibold text-[#4e5462]">
+                    Atualizado às {lastUpdatedLabel}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  disabled={loadingTickets}
+                  onClick={() => void fetchTickets(undefined, true)}
+                  className="text-xs font-extrabold text-[#016294] bg-[#e6f0f5] hover:bg-[#d5e7f0] disabled:opacity-60 px-3.5 py-2 rounded-xl cursor-pointer transition-colors"
+                >
+                  {loadingTickets ? "Atualizando..." : "Atualizar Lista"}
+                </button>
+              </div>
             </div>
 
             {/* Search & Status Filters */}
@@ -940,27 +1009,79 @@ export function AdminPortalClient({
                     </div>
 
                     <div
-                      className="flex items-center gap-2 shrink-0"
+                      className="flex items-center gap-2 shrink-0 flex-wrap"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <button
-                        type="button"
-                        disabled={submittingDecision}
-                        onClick={() => void handleReviewDecision(t, "aprovado")}
-                        className="bg-[#006c4a] hover:bg-[#00583c] text-white font-extrabold text-[11px] px-3 py-2 rounded-xl cursor-pointer transition-colors"
-                      >
-                        Aprovar
-                      </button>
-                      <button
-                        type="button"
-                        disabled={submittingDecision}
-                        onClick={() =>
-                          void handleReviewDecision(t, "reprovado")
-                        }
-                        className="bg-[#ffdad6] hover:bg-[#ffc8c2] text-[#93000a] font-extrabold text-[11px] px-3 py-2 rounded-xl cursor-pointer transition-colors"
-                      >
-                        Reprovar
-                      </button>
+                      {t.status === "aprovado" ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setReceiptTicket(t)}
+                            className="bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-[11px] px-3 py-2 rounded-xl cursor-pointer transition-colors"
+                          >
+                            Ver Comprovante
+                          </button>
+                          <button
+                            type="button"
+                            disabled={submittingDecision}
+                            onClick={() => {
+                              setRejectModalTicket(t);
+                              setRejectionReason(t.motivoReprovacao || "");
+                            }}
+                            className="bg-[#ffdad6] hover:bg-[#ffc8c2] text-[#93000a] font-extrabold text-[11px] px-3 py-2 rounded-xl cursor-pointer transition-colors"
+                          >
+                            Alterar p/ Reprovar
+                          </button>
+                        </>
+                      ) : t.status === "reprovado" ? (
+                        <>
+                          <button
+                            type="button"
+                            disabled={submittingDecision}
+                            onClick={() =>
+                              void handleReviewDecision(t, "aprovado")
+                            }
+                            className="bg-[#006c4a] hover:bg-[#00583c] text-white font-extrabold text-[11px] px-3 py-2 rounded-xl cursor-pointer transition-colors"
+                          >
+                            Alterar p/ Aprovar
+                          </button>
+                          <button
+                            type="button"
+                            disabled={submittingDecision}
+                            onClick={() => {
+                              setRejectModalTicket(t);
+                              setRejectionReason(t.motivoReprovacao || "");
+                            }}
+                            className="bg-white hover:bg-[#eceaf6] text-[#93000a] border border-[#93000a]/25 font-extrabold text-[11px] px-3 py-2 rounded-xl cursor-pointer transition-colors"
+                          >
+                            Editar Motivo
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            disabled={submittingDecision}
+                            onClick={() =>
+                              void handleReviewDecision(t, "aprovado")
+                            }
+                            className="bg-[#006c4a] hover:bg-[#00583c] text-white font-extrabold text-[11px] px-3 py-2 rounded-xl cursor-pointer transition-colors"
+                          >
+                            Aprovar
+                          </button>
+                          <button
+                            type="button"
+                            disabled={submittingDecision}
+                            onClick={() => {
+                              setRejectModalTicket(t);
+                              setRejectionReason("");
+                            }}
+                            className="bg-[#ffdad6] hover:bg-[#ffc8c2] text-[#93000a] font-extrabold text-[11px] px-3 py-2 rounded-xl cursor-pointer transition-colors"
+                          >
+                            Reprovar
+                          </button>
+                        </>
+                      )}
                     </div>
                   </article>
                 ))}
@@ -969,6 +1090,155 @@ export function AdminPortalClient({
           </section>
         </div>
       </main>
+
+      {/* MODAL: Informar Motivo da Reprovação */}
+      {rejectModalTicket && (
+        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl">
+            <h3 className="text-base font-extrabold text-[#131b2e]">
+              Reprovar Entrada — {rejectModalTicket.codigo}
+            </h3>
+            <p className="text-xs text-[#4e5462] mt-1">
+              Informe o motivo da reprovação. Esta mensagem aparecerá para o
+              torcedor e bloqueará a entrada na arena.
+            </p>
+            <textarea
+              rows={3}
+              value={rejectionReason}
+              onChange={(e) => setRejectionReason(e.target.value)}
+              placeholder="Ex: Biometria não validada, documento divergente, portão incorreto..."
+              className="mt-3 w-full rounded-xl bg-[#f2f3ff] p-3 text-xs text-[#131b2e] outline-none resize-none"
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRejectModalTicket(null)}
+                className="px-4 py-2.5 rounded-xl bg-[#f2f3ff] text-xs font-bold text-[#4e5462] cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={submittingDecision}
+                onClick={() =>
+                  void handleReviewDecision(
+                    rejectModalTicket,
+                    "reprovado",
+                    rejectionReason,
+                  )
+                }
+                className="px-5 py-2.5 rounded-xl bg-[#93000a] hover:bg-[#7a0008] text-xs font-extrabold text-white cursor-pointer"
+              >
+                Confirmar Reprovação
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Comprovante Oficial de Entrada Liberada (Visível para ADM) */}
+      {receiptTicket && (
+        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl text-center my-auto">
+            <div className="w-14 h-14 mx-auto rounded-full bg-[#006c4a] text-white flex items-center justify-center mb-3">
+              <svg
+                className="w-8 h-8"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            </div>
+            <span className="inline-block rounded-full bg-[#89f5c8] px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider text-[#005236]">
+              COMPROVANTE DE ENTRADA LIBERADA
+            </span>
+            <h3 className="text-lg font-extrabold text-[#131b2e] mt-2">
+              {receiptTicket.jogo}
+            </h3>
+            <p className="text-xs text-[#4e5462]">
+              {receiptTicket.estadio} • {receiptTicket.dataHorario}
+            </p>
+
+            <div className="mt-4 bg-[#f2f3ff] rounded-2xl p-4 text-left flex flex-col gap-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-[#4e5462] font-semibold">Código:</span>
+                <span className="font-mono font-extrabold text-[#131b2e]">
+                  {receiptTicket.codigo}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[#4e5462] font-semibold">Titular:</span>
+                <span className="font-extrabold text-[#131b2e]">
+                  {receiptTicket.titular}
+                </span>
+              </div>
+              {receiptTicket.cpf && (
+                <div className="flex justify-between">
+                  <span className="text-[#4e5462] font-semibold">CPF:</span>
+                  <span className="font-bold text-[#131b2e]">
+                    {receiptTicket.cpf}
+                  </span>
+                </div>
+              )}
+              <div className="flex justify-between">
+                <span className="text-[#4e5462] font-semibold">
+                  Setor / Portão:
+                </span>
+                <span className="font-extrabold text-[#016294]">
+                  {receiptTicket.setor} • Portão {receiptTicket.portao}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[#4e5462] font-semibold">Status:</span>
+                <span className="font-extrabold text-[#006c4a]">
+                  AUTORIZADO A ENTRAR ✓
+                </span>
+              </div>
+              {receiptTicket.reviewedAt && (
+                <div className="flex justify-between">
+                  <span className="text-[#4e5462] font-semibold">
+                    Aprovado em:
+                  </span>
+                  <span className="font-bold text-[#131b2e]">
+                    {new Date(receiptTicket.reviewedAt).toLocaleString("pt-BR")}
+                  </span>
+                </div>
+              )}
+              {receiptTicket.reviewedBy && (
+                <div className="flex justify-between">
+                  <span className="text-[#4e5462] font-semibold">
+                    Validado por:
+                  </span>
+                  <span className="font-bold text-[#131b2e]">
+                    {receiptTicket.reviewedBy}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5 flex gap-2.5">
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="flex-1 bg-[#e6f0f5] hover:bg-[#d5e7f0] text-[#016294] font-extrabold text-xs py-3 rounded-xl cursor-pointer"
+              >
+                Imprimir Comprovante
+              </button>
+              <button
+                type="button"
+                onClick={() => setReceiptTicket(null)}
+                className="flex-1 bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs py-3 rounded-xl cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Mobile Bottom Navigation Bar (Matching User App) */}
       <nav
