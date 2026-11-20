@@ -23,6 +23,7 @@ import {
 } from "@/app/lib/storage";
 
 import type { OfficialMatch, StadiumSector } from "@/app/api/jogos/route";
+import { ClubCrest } from "@/app/components/ClubCrest";
 import { TicketCodeVisual } from "@/app/components/TicketCodeVisual";
 
 export type AppTab = "ingressos" | "biometria" | "notificacoes" | "perfil";
@@ -948,19 +949,12 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
               {/* Teams Matchup Section */}
               <div className="px-4 sm:px-6 md:px-8 pt-5 sm:pt-6 pb-4 sm:pb-5 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0">
-                  <div
-                    className="w-11 h-11 sm:w-14 sm:h-14 rounded-full border border-[#e5e7eb] shadow-xs flex items-center justify-center shrink-0 text-xs sm:text-sm font-extrabold uppercase"
-                    style={
-                      activeTicket?.mandanteCor
-                        ? {
-                            backgroundColor: activeTicket.mandanteCor,
-                            color: "#ffffff",
-                          }
-                        : { backgroundColor: "#f2f3ff", color: "#016294" }
-                    }
-                  >
-                    {activeTicket?.mandanteSigla || "—"}
-                  </div>
+                  <ClubCrest
+                    sigla={activeTicket?.mandanteSigla}
+                    nome={activeTicket?.mandante}
+                    corPrimaria={activeTicket?.mandanteCor}
+                    size="lg"
+                  />
                   <div className="flex flex-col min-w-0">
                     <span className="text-[14.5px] sm:text-lg md:text-xl font-extrabold text-[#131b2e] leading-tight truncate">
                       {activeTicket?.mandante || "Escolha um jogo abaixo"}
@@ -986,19 +980,12 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                       VISITANTE
                     </span>
                   </div>
-                  <div
-                    className="w-11 h-11 sm:w-14 sm:h-14 rounded-full border border-[#e5e7eb] shadow-xs flex items-center justify-center shrink-0 text-xs sm:text-sm font-extrabold uppercase"
-                    style={
-                      activeTicket?.visitanteCor
-                        ? {
-                            backgroundColor: activeTicket.visitanteCor,
-                            color: "#ffffff",
-                          }
-                        : { backgroundColor: "#f2f3ff", color: "#4e5462" }
-                    }
-                  >
-                    {activeTicket?.visitanteSigla || "—"}
-                  </div>
+                  <ClubCrest
+                    sigla={activeTicket?.visitanteSigla}
+                    nome={activeTicket?.visitante}
+                    corPrimaria={activeTicket?.visitanteCor}
+                    size="lg"
+                  />
                 </div>
               </div>
 
@@ -1430,14 +1417,12 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                         {/* Clubs Row */}
                         <div className="flex items-center justify-between gap-2 my-3">
                           <div className="flex items-center gap-2 min-w-0">
-                            <span
-                              className="w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-extrabold text-white shrink-0 shadow-2xs"
-                              style={{
-                                backgroundColor: match.mandante.corPrimaria,
-                              }}
-                            >
-                              {match.mandante.sigla}
-                            </span>
+                            <ClubCrest
+                              sigla={match.mandante.sigla}
+                              nome={match.mandante.nome}
+                              corPrimaria={match.mandante.corPrimaria}
+                              size="sm"
+                            />
                             <span className="text-xs sm:text-sm font-extrabold text-[#131b2e] truncate">
                               {match.mandante.nome}
                             </span>
@@ -1451,14 +1436,12 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                             <span className="text-xs sm:text-sm font-extrabold text-[#131b2e] truncate text-right">
                               {match.visitante.nome}
                             </span>
-                            <span
-                              className="w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-extrabold text-white shrink-0 shadow-2xs"
-                              style={{
-                                backgroundColor: match.visitante.corPrimaria,
-                              }}
-                            >
-                              {match.visitante.sigla}
-                            </span>
+                            <ClubCrest
+                              sigla={match.visitante.sigla}
+                              nome={match.visitante.nome}
+                              corPrimaria={match.visitante.corPrimaria}
+                              size="sm"
+                            />
                           </div>
                         </div>
 
