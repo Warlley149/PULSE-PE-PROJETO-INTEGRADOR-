@@ -23,6 +23,7 @@ import {
 } from "@/app/lib/storage";
 
 import type { OfficialMatch, StadiumSector } from "@/app/api/jogos/route";
+import { TicketCodeVisual } from "@/app/components/TicketCodeVisual";
 
 export type AppTab = "ingressos" | "biometria" | "notificacoes" | "perfil";
 type NotifFilter = "todas" | "acesso" | "partidas" | "clube";
@@ -34,6 +35,7 @@ type ModalType =
   | "dependentes"
   | "acessibilidade"
   | "gerar-ingresso"
+  | "codigo-arena"
   | "notificacao"
   | "carteirinha";
 
@@ -84,6 +86,10 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     useState<OfficialMatch | null>(null);
   const [selectedSectorId, setSelectedSectorId] = useState<string>("");
   const [activeTicketIndex, setActiveTicketIndex] = useState<number>(0);
+  const [ticketForCodeModal, setTicketForCodeModal] =
+    useState<TicketAccess | null>(null);
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [enteredCodes, setEnteredCodes] = useState<Record<string, string>>({});
 
   // Custom Notification Form State
   const [notifCategoria, setNotifCategoria] =
@@ -140,6 +146,39 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       setTickets(savedTickets);
       setNotifications(savedNotifs);
       populateFormFromProfile(savedProfile);
+
+      if (typeof window !== "undefined") {
+        const map: Record<string, string> = {};
+        for (const t of savedTickets) {
+          const enteredAt = window.localStorage.getItem(
+            `pulse_pe_entry_${t.codigoIngresso}`,
+          );
+          if (enteredAt) map[t.codigoIngresso] = enteredAt;
+        }
+        setEnteredCodes(map);
+      }
+    };
+
+    const loadValidatedEntries = async () => {
+      try {
+        const res = await fetch("/api/ingressos/validar");
+        if (res.ok) {
+          const data = (await res.json()) as {
+            entries?: Array<{ codigo: string; enteredAt: string }>;
+          };
+          if (Array.isArray(data.entries)) {
+            setEnteredCodes((prev) => {
+              const next = { ...prev };
+              for (const entry of data.entries!) {
+                next[entry.codigo] = entry.enteredAt;
+              }
+              return next;
+            });
+          }
+        }
+      } catch {
+        // Ignore network error
+      }
     };
 
     const loadOfficialMatches = async () => {
@@ -158,10 +197,13 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
 
     const timer = window.setTimeout(syncState, 0);
     void loadOfficialMatches();
+    void loadValidatedEntries();
     window.addEventListener("storage", syncState);
+    window.addEventListener("focus", loadValidatedEntries);
     return () => {
       window.clearTimeout(timer);
       window.removeEventListener("storage", syncState);
+      window.removeEventListener("focus", loadValidatedEntries);
       stopCamera();
     };
   }, [populateFormFromProfile, stopCamera]);
@@ -465,6 +507,60 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     setStatusToast(
       `Ingresso ${randomCode} gerado para ${selectedMatchForTicket.mandante.nome} x ${selectedMatchForTicket.visitante.nome} (${chosenSector.nome} • Portão ${chosenSector.portao}).`,
     );
+  };
+
+  const buildValidationUrl = (ticket: TicketAccess) => {
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const params = new URLSearchParams({
+      codigo: ticket.codigoIngresso,
+      jogo: `${ticket.mandante} x ${ticket.visitante}`,
+      estadio: ticket.estadio,
+      portao: ticket.portao,
+      setor: ticket.setor,
+      data: ticket.dataHorario,
+      titular: profile?.nome || "Titular não informado",
+      cpf: profile?.cpf || "",
+      bio: hasFaceRegistered ? "1" : "0",
+    });
+    return `${origin}/validar?${params.toString()}`;
+  };
+
+  const handleCopyTicketCode = async (code: string) => {
+    let copied = false;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(code);
+        copied = true;
+      }
+    } catch {
+      copied = false;
+    }
+
+    if (!copied && typeof document !== "undefined") {
+      try {
+        const textarea = document.createElement("textarea");
+        textarea.value = code;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        copied = document.execCommand("copy");
+        document.body.removeChild(textarea);
+      } catch {
+        copied = false;
+      }
+    }
+
+    setCopiedCode(code);
+    setStatusToast(
+      copied
+        ? `Código ${code} copiado para a área de transferência.`
+        : `Código do ingresso: ${code}`,
+    );
+    window.setTimeout(() => {
+      setCopiedCode((prev) => (prev === code ? null : prev));
+    }, 2500);
   };
 
   const filteredMatches = officialMatches.filter((m) => {
@@ -1046,11 +1142,11 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                 </div>
               </div>
 
-              <div className="px-4 sm:px-6 md:px-8 mt-4 sm:mt-6">
+              <div className="px-4 sm:px-6 md:px-8 mt-4 sm:mt-6 flex flex-col sm:flex-row gap-3">
                 <button
                   type="button"
                   onClick={() => handleSwitchTab("biometria")}
-                  className="w-full bg-[#016294] hover:bg-[#01537e] active:scale-[0.99] transition-all text-white rounded-xl sm:rounded-2xl py-3.5 sm:py-4 px-4 flex items-center justify-center gap-2.5 shadow-xs cursor-pointer"
+                  className="flex-1 bg-[#016294] hover:bg-[#01537e] active:scale-[0.99] transition-all text-white rounded-xl sm:rounded-2xl py-3.5 sm:py-4 px-4 flex items-center justify-center gap-2.5 shadow-xs cursor-pointer"
                 >
                   <svg
                     className="w-4 h-4 sm:w-5 sm:h-5 text-white shrink-0"
@@ -1072,6 +1168,35 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     ACESSAR PASSE FACIAL DIGITAL
                   </span>
                 </button>
+
+                {activeTicket && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTicketForCodeModal(activeTicket);
+                      setActiveModal("codigo-arena");
+                    }}
+                    className="bg-[#e6f0f5] hover:bg-[#d5e7f0] active:scale-[0.99] transition-all text-[#016294] rounded-xl sm:rounded-2xl py-3.5 sm:py-4 px-5 flex items-center justify-center gap-2 cursor-pointer shrink-0"
+                  >
+                    <svg
+                      className="w-4 h-4 sm:w-5 sm:h-5 shrink-0"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <rect x="3" y="3" width="7" height="7" />
+                      <rect x="14" y="3" width="7" height="7" />
+                      <rect x="14" y="14" width="7" height="7" />
+                      <rect x="3" y="14" width="7" height="7" />
+                    </svg>
+                    <span className="text-[11.5px] sm:text-xs md:text-sm font-extrabold uppercase tracking-[0.04em]">
+                      VER CÓDIGO ({activeTicket.codigoIngresso})
+                    </span>
+                  </button>
+                )}
               </div>
 
               <div className="px-6 mt-3.5 sm:mt-4 flex flex-col items-center text-center">
@@ -1100,6 +1225,138 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                   </p>
                 )}
               </div>
+            </section>
+
+            {/* Dedicated Section: Meus Códigos de Ingresso para Entrada na Arena */}
+            <section className="mt-7 bg-white rounded-[26px] shadow-[0_6px_24px_rgba(19,27,46,0.05)] p-5 sm:p-6 flex flex-col">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-4 border-b border-[#eceaf6]">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-[#e6f0f5] text-[#016294] flex items-center justify-center shrink-0">
+                    <svg
+                      className="w-5 h-5"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <rect x="3" y="3" width="7" height="7" />
+                      <rect x="14" y="3" width="7" height="7" />
+                      <rect x="14" y="14" width="7" height="7" />
+                      <rect x="3" y="14" width="7" height="7" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h2 className="text-sm sm:text-base font-extrabold text-[#131b2e]">
+                      Códigos dos Ingressos para Entrada na Arena
+                    </h2>
+                    <p className="text-[11px] sm:text-xs text-[#4e5462]">
+                      Apresente o QR Code ou código alfanumérico na catraca ou
+                      leitor da arena.
+                    </p>
+                  </div>
+                </div>
+                <span className="self-start sm:self-auto text-[11px] font-extrabold text-[#016294] bg-[#f2f3ff] px-3 py-1 rounded-full">
+                  {tickets.length} ingresso(s) ativo(s)
+                </span>
+              </div>
+
+              {tickets.length === 0 ? (
+                <div className="py-8 text-center">
+                  <p className="text-xs sm:text-sm font-bold text-[#131b2e]">
+                    Nenhum código de ingresso gerado ainda
+                  </p>
+                  <p className="text-xs text-[#4e5462] mt-1">
+                    Selecione um dos próximos jogos oficiais abaixo para gerar
+                    seu ingresso e código de acesso na catraca.
+                  </p>
+                </div>
+              ) : (
+                <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {tickets.map((t, idx) => (
+                    <div
+                      key={t.id}
+                      className="bg-[#f2f3ff] rounded-2xl p-4 flex flex-col justify-between gap-3 border border-[#e2e7ff]"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#016294]">
+                            {t.estadio} • Portão {t.portao}
+                          </span>
+                          <p className="text-sm font-extrabold text-[#131b2e] mt-0.5">
+                            {t.mandante} x {t.visitante}
+                          </p>
+                          <p className="text-[11px] text-[#4e5462]">
+                            {t.dataHorario} • {t.setor}
+                          </p>
+                        </div>
+                        <span
+                          className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full shrink-0 ${
+                            enteredCodes[t.codigoIngresso]
+                              ? "bg-[#006c4a] text-white"
+                              : "bg-[#89f5c8] text-[#005236]"
+                          }`}
+                        >
+                          {enteredCodes[t.codigoIngresso]
+                            ? "ENTROU NO JOGO ✓"
+                            : "VÁLIDO"}
+                        </span>
+                      </div>
+
+                      <div className="bg-white rounded-xl p-3 flex items-center justify-between gap-2 border border-[#eceaf6]">
+                        <div>
+                          <p className="text-[9.5px] font-bold uppercase tracking-wider text-[#4e5462]">
+                            CÓDIGO DE ACESSO NA CATRACA
+                          </p>
+                          <p className="text-base font-mono font-extrabold tracking-widest text-[#131b2e] mt-0.5">
+                            {t.codigoIngresso}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyTicketCode(t.codigoIngresso)}
+                          className={`text-[11px] font-extrabold px-3 py-1.5 rounded-lg cursor-pointer transition-colors shrink-0 ${
+                            copiedCode === t.codigoIngresso
+                              ? "bg-[#006c4a] text-white"
+                              : "text-[#016294] bg-[#e6f0f5] hover:bg-[#d5e7f0]"
+                          }`}
+                        >
+                          {copiedCode === t.codigoIngresso
+                            ? "Copiado ✓"
+                            : "Copiar"}
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveTicketIndex(idx);
+                            setTicketForCodeModal(t);
+                            setActiveModal("codigo-arena");
+                          }}
+                          className="flex-1 bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs py-2.5 px-3 rounded-xl transition-colors cursor-pointer"
+                        >
+                          Abrir QR Code / Catraca
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            removeTicketAccess(t.id);
+                            const next = getStoredTickets();
+                            setTickets(next);
+                            setActiveTicketIndex(0);
+                          }}
+                          className="bg-[#ffdad6] hover:bg-[#ffc8c2] text-[#93000a] font-extrabold text-xs py-2.5 px-3 rounded-xl transition-colors cursor-pointer"
+                        >
+                          Remover
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
 
             {/* Official Upcoming Matches Catalog (FPF-PE & Ilha do Retiro) */}
@@ -3147,6 +3404,144 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 5B: Código do Ingresso em Tela Cheia para Entrada na Arena */}
+      {activeModal === "codigo-arena" && ticketForCodeModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl my-auto flex flex-col items-center text-center">
+            <div className="w-full flex items-center justify-between mb-3">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-[#89f5c8] px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider text-[#005236]">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#005236]" />
+                ACESSO LIBERADO • ARENA
+              </span>
+              <button
+                type="button"
+                onClick={() => setActiveModal(null)}
+                className="text-xs font-bold text-[#4e5462] cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <h2 className="text-lg font-extrabold text-[#131b2e]">
+              {ticketForCodeModal.mandante} x {ticketForCodeModal.visitante}
+            </h2>
+            <p className="text-xs font-semibold text-[#4e5462] mt-0.5">
+              {ticketForCodeModal.estadio} • {ticketForCodeModal.dataHorario}
+            </p>
+
+            {/* Real Scannable ISO/IEC 18004 QR Code & Linear Barcode */}
+            <div className="my-5 w-full bg-[#f2f3ff] rounded-2xl p-5 flex flex-col items-center">
+              <TicketCodeVisual
+                code={ticketForCodeModal.codigoIngresso}
+                validationUrl={buildValidationUrl(ticketForCodeModal)}
+                size={196}
+              />
+              <p className="text-[10.5px] text-[#4e5462] mt-2.5">
+                Aponte a câmera do celular ou clique abaixo para confirmar a
+                entrada na arena.
+              </p>
+            </div>
+
+            {enteredCodes[ticketForCodeModal.codigoIngresso] && (
+              <div className="w-full mb-4 rounded-xl bg-[#d4f4e4] border border-[#006c4a]/25 p-3 text-xs font-extrabold text-[#005236]">
+                ✓ Torcedor entrou no jogo às{" "}
+                {new Date(
+                  enteredCodes[ticketForCodeModal.codigoIngresso],
+                ).toLocaleTimeString("pt-BR", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                })}
+              </div>
+            )}
+
+            {/* Gate, Sector & Holder Details for Arena Attendant */}
+            <div className="w-full grid grid-cols-2 gap-2.5 text-left mb-4">
+              <div className="bg-[#e6f0f5] rounded-xl p-3">
+                <p className="text-[9.5px] font-bold uppercase tracking-wider text-[#016294]">
+                  PORTÃO DESIGNADO
+                </p>
+                <p className="text-base font-extrabold text-[#016294]">
+                  Portão {ticketForCodeModal.portao}
+                </p>
+                <p className="text-[10px] text-[#016294] truncate">
+                  {ticketForCodeModal.enderecoPortao}
+                </p>
+              </div>
+
+              <div className="bg-[#f2f3ff] rounded-xl p-3">
+                <p className="text-[9.5px] font-bold uppercase tracking-wider text-[#4e5462]">
+                  SETOR
+                </p>
+                <p className="text-xs sm:text-sm font-extrabold text-[#131b2e]">
+                  {ticketForCodeModal.setor}
+                </p>
+                <p className="text-[10px] text-[#4e5462] truncate">
+                  {ticketForCodeModal.subsetor}
+                </p>
+              </div>
+            </div>
+
+            <div className="w-full bg-[#faf8ff] border border-[#eceaf6] rounded-xl p-3 flex items-center justify-between text-left mb-4">
+              <div className="min-w-0">
+                <p className="text-[9.5px] font-bold uppercase tracking-wider text-[#4e5462]">
+                  TITULAR DO INGRESSO
+                </p>
+                <p className="text-xs font-extrabold text-[#131b2e] truncate">
+                  {profile?.nome || "Titular não identificado"}
+                  {profile?.cpf ? ` • CPF ${profile.cpf}` : ""}
+                </p>
+              </div>
+              <span
+                className={`text-[10px] font-extrabold px-2.5 py-1 rounded-full shrink-0 ${
+                  hasFaceRegistered
+                    ? "bg-[#d4f4e4] text-[#005236]"
+                    : "bg-[#ffdad6] text-[#93000a]"
+                }`}
+              >
+                {hasFaceRegistered ? "Biometria OK" : "Sem Biometria"}
+              </span>
+            </div>
+
+            <div className="w-full flex flex-col gap-2.5">
+              <a
+                href={buildValidationUrl(ticketForCodeModal)}
+                className="w-full bg-[#006c4a] hover:bg-[#00583c] text-white font-extrabold text-xs uppercase tracking-wider py-3.5 px-4 rounded-xl text-center transition-colors"
+              >
+                {enteredCodes[ticketForCodeModal.codigoIngresso]
+                  ? "Ver Comprovante de Entrada na Arena"
+                  : "Confirmar Entrada na Arena (Validar QR)"}
+              </a>
+
+              <div className="w-full flex gap-2.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleCopyTicketCode(ticketForCodeModal.codigoIngresso)
+                  }
+                  className={`flex-1 font-extrabold text-xs py-3 rounded-xl cursor-pointer transition-colors ${
+                    copiedCode === ticketForCodeModal.codigoIngresso
+                      ? "bg-[#006c4a] text-white"
+                      : "bg-[#e6f0f5] hover:bg-[#d5e7f0] text-[#016294]"
+                  }`}
+                >
+                  {copiedCode === ticketForCodeModal.codigoIngresso
+                    ? `Copiado (${ticketForCodeModal.codigoIngresso}) ✓`
+                    : "Copiar Código"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveModal(null)}
+                  className="flex-1 bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs py-3 rounded-xl cursor-pointer transition-colors"
+                >
+                  Concluir
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
