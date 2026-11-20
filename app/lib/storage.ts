@@ -89,6 +89,8 @@ const STORAGE_KEYS = {
 } as const;
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "/api/biometria";
+const PYTHON_API_URL =
+  process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://127.0.0.1:8000";
 
 export function formatCPF(value: string): string {
   const digits = value.replace(/\D/g, "").slice(0, 11);
@@ -127,10 +129,22 @@ export async function computeSha256Hex(input: string): Promise<string> {
   return "";
 }
 
-export function getStoredProfile(): BiometricProfile | null {
+function getProfileStorageKey(email?: string | null): string | null {
+  const activeEmail = (email ?? getLoggedUserEmail() ?? "")
+    .trim()
+    .toLowerCase();
+  if (!activeEmail) return null;
+  return `${STORAGE_KEYS.PROFILE}_${activeEmail}`;
+}
+
+export function getStoredProfile(
+  email?: string | null,
+): BiometricProfile | null {
   if (typeof window === "undefined") return null;
+  const key = getProfileStorageKey(email);
+  if (!key) return null;
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEYS.PROFILE);
+    const raw = window.localStorage.getItem(key);
     if (!raw) return null;
     return JSON.parse(raw) as BiometricProfile;
   } catch {
@@ -141,7 +155,10 @@ export function getStoredProfile(): BiometricProfile | null {
 export async function saveBiometricProfile(
   partial: Partial<BiometricProfile>,
 ): Promise<BiometricProfile> {
-  const existing = getStoredProfile();
+  const targetEmail = (partial.email ?? getLoggedUserEmail() ?? "")
+    .trim()
+    .toLowerCase();
+  const existing = getStoredProfile(targetEmail);
   const now = new Date().toISOString();
   const nextFaceUrl =
     partial.faceImageDataUrl !== undefined
@@ -203,7 +220,10 @@ export async function saveBiometricProfile(
   };
 
   if (typeof window !== "undefined") {
-    window.localStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify(record));
+    const key = getProfileStorageKey(record.email);
+    if (key) {
+      window.localStorage.setItem(key, JSON.stringify(record));
+    }
   }
 
   try {
@@ -214,6 +234,29 @@ export async function saveBiometricProfile(
     });
   } catch {
     // Persisted locally until external backend is connected
+  }
+
+  // Also sync profile edits (dependents, documento, acessibilidade, canais) to Python SQLite
+  if (record.email) {
+    void fetch(`${PYTHON_API_URL}/api/v1/users/perfil`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: record.email,
+        nome: record.nome,
+        matricula: record.matricula,
+        plano: record.plano,
+        categoria: record.categoria,
+        membroDesde: record.membroDesde,
+        telefone: record.telefone,
+        documentoIdentificacao: record.documentoIdentificacao,
+        orgaoEmissor: record.orgaoEmissor,
+        acessibilidade: record.acessibilidade,
+        alertasPortao: record.alertasPortao,
+        catracaTempoReal: record.catracaTempoReal,
+        dependentes: record.dependentes,
+      }),
+    }).catch(() => {});
   }
 
   return record;
@@ -322,6 +365,20 @@ export function addSystemNotification(input: {
       STORAGE_KEYS.NOTIFICATIONS,
       JSON.stringify(updated),
     );
+    const currentEmail =
+      window.localStorage.getItem(STORAGE_KEYS.SESSION_EMAIL) || "";
+    void fetch(`${PYTHON_API_URL}/api/v1/notifications`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userEmail: currentEmail,
+        categoria: item.categoria,
+        selo: item.selo,
+        titulo: item.titulo,
+        mensagem: item.mensagem,
+        detalheRodape: item.detalheRodape || "",
+      }),
+    }).catch(() => {});
   }
   return item;
 }

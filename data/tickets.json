@@ -1,0 +1,53 @@
+[
+  {
+    "codigo": "PE-194927",
+    "matchId": "fpf-2027-frevo-sport-estreia",
+    "competicao": "CAMPEONATO PERNAMBUCANO",
+    "jogo": "Sport Recife x Náutico",
+    "estadio": "Ilha do Retiro",
+    "dataHorario": "03/Jan/2027, 16:00",
+    "setor": "Cadeiras de Ampliação",
+    "subsetor": "Portaria Principal",
+    "portao": "11",
+    "enderecoPortao": "Rua Sport Club do Recife",
+    "titular": "Warlley dos Santos Tenório",
+    "cpf": "123.456.789-00",
+    "biometriaOk": true,
+    "status": "pendente",
+    "createdAt": "2026-11-20T17:04:23.161Z"
+  },
+  {
+    "codigo": "PE-416170",
+    "matchId": "fpf-2027-frevo-sport-estreia",
+    "competicao": "CAMPEONATO PERNAMBUCANO",
+    "jogo": "Sport Recife x Náutico",
+    "estadio": "Ilha do Retiro",
+    "dataHorario": "03/Jan/2027, 16:00",
+    "setor": "Assento Especial",
+    "subsetor": "Portaria Principal",
+    "portao": "04",
+    "enderecoPortao": "Rua Sport Club do Recife",
+    "titular": "Warlley dos Santos Tenório",
+    "cpf": "123.456.789-00",
+    "biometriaOk": true,
+    "status": "pendente",
+    "createdAt": "2026-11-20T17:04:23.086Z"
+  },
+  {
+    "codigo": "PE-337378",
+    "matchId": "fpf-2026-forro-r1-pet-ame",
+    "competicao": "PERNAMBUCANO • TURNO FORRÓ",
+    "jogo": "Petrolina x América-PE",
+    "estadio": "Estádio Paulo Coelho",
+    "dataHorario": "Sáb, 21/11 • 16:00",
+    "setor": "Arquibancada Geral",
+    "subsetor": "Setor Leste",
+    "portao": "02",
+    "enderecoPortao": "Av. Tancredo Neves, Petrolina",
+    "titular": "Warlley dos Santos Tenório",
+    "cpf": "123.456.789-00",
+    "biometriaOk": true,
+    "status": "pendente",
+    "createdAt": "2026-11-20T17:04:23.015Z"
+  }
+]

@@ -1,3 +1,6 @@
+import fs from "fs";
+import path from "path";
+
 export type TicketValidationStatus = "pendente" | "aprovado" | "reprovado";
 
 export interface ServerTicketRecord {
@@ -21,23 +24,49 @@ export interface ServerTicketRecord {
   reviewedBy?: string;
 }
 
-// Persist across hot-reloads in Next.js dev mode using globalThis
-const globalForTickets = globalThis as unknown as {
-  __pulsePeTicketsStore?: Map<string, ServerTicketRecord>;
-};
+const DATA_DIR = path.join(process.cwd(), "data");
+const TICKETS_FILE = path.join(DATA_DIR, "tickets.json");
+const PYTHON_API_URL =
+  process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://127.0.0.1:8000";
 
-function getStore(): Map<string, ServerTicketRecord> {
-  if (!globalForTickets.__pulsePeTicketsStore) {
-    globalForTickets.__pulsePeTicketsStore = new Map<
-      string,
-      ServerTicketRecord
-    >();
+function readDiskTickets(): Map<string, ServerTicketRecord> {
+  const map = new Map<string, ServerTicketRecord>();
+  try {
+    if (fs.existsSync(TICKETS_FILE)) {
+      const raw = fs.readFileSync(TICKETS_FILE, "utf8");
+      const arr = JSON.parse(raw) as ServerTicketRecord[];
+      if (Array.isArray(arr)) {
+        for (const item of arr) {
+          if (item?.codigo) {
+            map.set(item.codigo.trim().toUpperCase(), item);
+          }
+        }
+      }
+    }
+  } catch {
+    // ignore corrupt/missing file
   }
-  return globalForTickets.__pulsePeTicketsStore;
+  return map;
+}
+
+function writeDiskTickets(map: Map<string, ServerTicketRecord>): void {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const sorted = Array.from(map.values()).sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+    fs.writeFileSync(TICKETS_FILE, JSON.stringify(sorted, null, 2), "utf8");
+  } catch {
+    // ignore fs errors on read-only serverless environments
+  }
 }
 
 export function listAllServerTickets(): ServerTicketRecord[] {
-  return Array.from(getStore().values()).sort(
+  const map = readDiskTickets();
+  return Array.from(map.values()).sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   );
 }
@@ -45,7 +74,8 @@ export function listAllServerTickets(): ServerTicketRecord[] {
 export function getServerTicketByCode(
   codigo: string,
 ): ServerTicketRecord | null {
-  return getStore().get(codigo.trim().toUpperCase()) || null;
+  const map = readDiskTickets();
+  return map.get(codigo.trim().toUpperCase()) || null;
 }
 
 export function upsertServerTicket(
@@ -54,8 +84,9 @@ export function upsertServerTicket(
     createdAt?: string;
   },
 ): ServerTicketRecord {
+  const map = readDiskTickets();
   const code = input.codigo.trim().toUpperCase();
-  const existing = getStore().get(code);
+  const existing = map.get(code);
 
   const record: ServerTicketRecord = {
     ...input,
@@ -68,7 +99,16 @@ export function upsertServerTicket(
       existing?.createdAt || input.createdAt || new Date().toISOString(),
   };
 
-  getStore().set(code, record);
+  map.set(code, record);
+  writeDiskTickets(map);
+
+  // Also mirror to Python SQLite database asynchronously
+  void fetch(`${PYTHON_API_URL}/api/v1/tickets`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(record),
+  }).catch(() => {});
+
   return record;
 }
 
@@ -79,8 +119,9 @@ export function reviewServerTicket(params: {
   reviewedBy: string;
   fallbackMeta?: Partial<ServerTicketRecord>;
 }): ServerTicketRecord {
+  const map = readDiskTickets();
   const code = params.codigo.trim().toUpperCase();
-  const existing = getStore().get(code);
+  const existing = map.get(code);
   const now = new Date().toISOString();
 
   const updated: ServerTicketRecord = {
@@ -115,10 +156,33 @@ export function reviewServerTicket(params: {
     reviewedBy: params.decision === "pendente" ? undefined : params.reviewedBy,
   };
 
-  getStore().set(code, updated);
+  map.set(code, updated);
+  writeDiskTickets(map);
+
+  // Also mirror review decision to Python SQLite database
+  void fetch(`${PYTHON_API_URL}/api/v1/tickets/review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      codigo: code,
+      decision: params.decision,
+      motivoReprovacao: updated.motivoReprovacao || "",
+      reviewedBy: params.reviewedBy,
+    }),
+  }).catch(() => {});
+
   return updated;
 }
 
 export function deleteServerTicket(codigo: string): boolean {
-  return getStore().delete(codigo.trim().toUpperCase());
+  const map = readDiskTickets();
+  const code = codigo.trim().toUpperCase();
+  const existed = map.delete(code);
+  if (existed) {
+    writeDiskTickets(map);
+  }
+  void fetch(`${PYTHON_API_URL}/api/v1/tickets/${encodeURIComponent(code)}`, {
+    method: "DELETE",
+  }).catch(() => {});
+  return existed;
 }

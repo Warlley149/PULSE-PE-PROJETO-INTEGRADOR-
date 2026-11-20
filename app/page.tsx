@@ -943,6 +943,10 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     }
 
     // Registration only finishes after mandatory facial recognition capture
+    // Clear any previous account's profile/photo from view so each user only sees their own face
+    setProfile(null);
+    setFaceChecks(null);
+    setFaceRejectionReasons([]);
     setPendingRegistration({
       nome: authNome.trim(),
       email: authEmail.trim().toLowerCase(),
@@ -2155,7 +2159,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                           facingMode === "user" ? "-scale-x-100" : ""
                         }`}
                       />
-                    ) : profile?.faceImageDataUrl ? (
+                    ) : !pendingRegistration && profile?.faceImageDataUrl ? (
                       /* eslint-disable-next-line @next/next/no-img-element */
                       <img
                         src={profile.faceImageDataUrl}
@@ -3782,6 +3786,10 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                   onClick={() => {
                     logoutUserSession();
                     setLoggedEmail(null);
+                    setProfile(null);
+                    setFaceChecks(null);
+                    setFaceRejectionReasons([]);
+                    setPendingRegistration(null);
                     setAuthMode("login");
                     setStatusToast("Você saiu da sua conta.");
                   }}
