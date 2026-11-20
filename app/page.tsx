@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   addSystemNotification,
   type BiometricProfile,
@@ -8,26 +9,39 @@ import {
   type DependentMember,
   formatCPF,
   formatPhone,
+  getLoggedUserEmail,
   getStoredNotifications,
   getStoredProfile,
   getStoredTickets,
   isValidCPF,
+  loginUserAccount,
+  logoutUserSession,
   markAllNotificationsRead,
   type NotificationCategory,
-  removeBiometricProfile,
+  registerUserAccount,
   removeTicketAccess,
   saveBiometricProfile,
   saveTicketAccess,
+  setLoggedUserEmail,
   type SystemNotification,
   type TicketAccess,
 } from "@/app/lib/storage";
 
+const PYTHON_API_URL =
+  process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://127.0.0.1:8000";
+
+interface FaceCheckItem {
+  ok: boolean;
+  detalhe: string;
+}
+
 import type { OfficialMatch, StadiumSector } from "@/app/api/jogos/route";
+import { ClubCrest } from "@/app/components/ClubCrest";
 import { TicketCodeVisual } from "@/app/components/TicketCodeVisual";
 
 export type AppTab = "ingressos" | "biometria" | "notificacoes" | "perfil";
 type NotifFilter = "todas" | "acesso" | "partidas" | "clube";
-type MatchFilter = "todos" | "ilha" | "recife" | "interior";
+type MatchFilter = "todos" | "brasil" | "pe" | "ilha";
 type ModalType =
   | null
   | "perfil"
@@ -44,8 +58,28 @@ interface PulseAppProps {
 }
 
 export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<AppTab>(initialTab);
   const [profile, setProfile] = useState<BiometricProfile | null>(null);
+  const [loggedEmail, setLoggedEmail] = useState<string | null>(null);
+  const [adminSessionEmail, setAdminSessionEmail] = useState<string | null>(
+    null,
+  );
+  const [pendingRegistration, setPendingRegistration] = useState<{
+    nome: string;
+    email: string;
+    cpf: string;
+    password: string;
+    matricula: string;
+  } | null>(null);
+  const [authMode, setAuthMode] = useState<"login" | "cadastro">("login");
+  const [authEmail, setAuthEmail] = useState<string>("");
+  const [authPassword, setAuthPassword] = useState<string>("");
+  const [authNome, setAuthNome] = useState<string>("");
+  const [authCpf, setAuthCpf] = useState<string>("");
+  const [authMatricula, setAuthMatricula] = useState<string>("");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState<boolean>(false);
   const [tickets, setTickets] = useState<TicketAccess[]>([]);
   const [notifications, setNotifications] = useState<SystemNotification[]>([]);
   const [activeModal, setActiveModal] = useState<ModalType>(null);
@@ -59,6 +93,15 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
   const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [liveQualityScore, setLiveQualityScore] = useState<number>(0);
+  const [validatingFace, setValidatingFace] = useState<boolean>(false);
+  const [faceChecks, setFaceChecks] = useState<Record<
+    string,
+    FaceCheckItem
+  > | null>(null);
+  const [faceRejectionReasons, setFaceRejectionReasons] = useState<string[]>(
+    [],
+  );
+  const [sessionChecked, setSessionChecked] = useState<boolean>(false);
 
   // User Profile Form States (100% user-entered, empty by default)
   const [nome, setNome] = useState<string>("");
@@ -79,8 +122,9 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
   const [depParentesco, setDepParentesco] = useState<string>("");
   const [depDocumento, setDepDocumento] = useState<string>("");
 
-  // Official Upcoming Matches from /api/jogos (FPF-PE & Ilha do Retiro)
+  // Official Upcoming Matches from /api/jogos (ESPN Brasil Nacional + FPF-PE)
   const [officialMatches, setOfficialMatches] = useState<OfficialMatch[]>([]);
+  const [loadingMatches, setLoadingMatches] = useState<boolean>(false);
   const [matchFilter, setMatchFilter] = useState<MatchFilter>("todos");
   const [selectedMatchForTicket, setSelectedMatchForTicket] =
     useState<OfficialMatch | null>(null);
@@ -89,7 +133,18 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
   const [ticketForCodeModal, setTicketForCodeModal] =
     useState<TicketAccess | null>(null);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
-  const [enteredCodes, setEnteredCodes] = useState<Record<string, string>>({});
+  const [lanOrigin, setLanOrigin] = useState<string | null>(null);
+  const [ticketStatuses, setTicketStatuses] = useState<
+    Record<
+      string,
+      {
+        status: "pendente" | "aprovado" | "reprovado";
+        reviewedAt?: string;
+        reviewedBy?: string;
+        motivoReprovacao?: string;
+      }
+    >
+  >({});
 
   // Custom Notification Form State
   const [notifCategoria, setNotifCategoria] =
@@ -136,6 +191,25 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     setAcessibilidade(p.acessibilidade);
   }, []);
 
+  const refreshOfficialMatches = useCallback(async () => {
+    setLoadingMatches(true);
+    try {
+      const res = await fetch(`/api/jogos?_t=${Date.now()}`, {
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { jogos?: OfficialMatch[] };
+        if (Array.isArray(data.jogos)) {
+          setOfficialMatches(data.jogos);
+        }
+      }
+    } catch {
+      // Ignore network error
+    } finally {
+      setLoadingMatches(false);
+    }
+  }, []);
+
   useEffect(() => {
     const syncState = () => {
       const savedProfile = getStoredProfile();
@@ -143,37 +217,87 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       const savedNotifs = getStoredNotifications();
 
       setProfile(savedProfile);
+      setLoggedEmail(getLoggedUserEmail());
       setTickets(savedTickets);
       setNotifications(savedNotifs);
       populateFormFromProfile(savedProfile);
 
       if (typeof window !== "undefined") {
-        const map: Record<string, string> = {};
-        for (const t of savedTickets) {
-          const enteredAt = window.localStorage.getItem(
-            `pulse_pe_entry_${t.codigoIngresso}`,
-          );
-          if (enteredAt) map[t.codigoIngresso] = enteredAt;
+        const params = new URLSearchParams(window.location.search);
+        const tabParam = params.get("tab");
+        if (
+          tabParam === "notificacoes" ||
+          tabParam === "perfil" ||
+          tabParam === "biometria" ||
+          tabParam === "ingressos"
+        ) {
+          setActiveTab(tabParam);
         }
-        setEnteredCodes(map);
+      }
+
+      // Ensure existing local tickets are registered on the server for the Admin list
+      for (const t of savedTickets) {
+        void fetch("/api/ingressos", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            codigo: t.codigoIngresso,
+            matchId: t.matchId,
+            competicao: t.competicao,
+            jogo: `${t.mandante} x ${t.visitante}`,
+            estadio: t.estadio,
+            dataHorario: t.dataHorario,
+            setor: t.setor,
+            subsetor: t.subsetor,
+            portao: t.portao,
+            enderecoPortao: t.enderecoPortao,
+            titular: savedProfile?.nome || "Titular não informado",
+            cpf: savedProfile?.cpf || "",
+            userEmail: savedProfile?.email || getLoggedUserEmail() || "",
+            biometriaOk: Boolean(savedProfile?.faceImageDataUrl),
+          }),
+        }).catch(() => {});
       }
     };
 
-    const loadValidatedEntries = async () => {
+    const loadTicketStatuses = async () => {
+      const savedTickets = getStoredTickets();
+      if (savedTickets.length === 0) return;
       try {
-        const res = await fetch("/api/ingressos/validar");
+        const codesParam = savedTickets.map((t) => t.codigoIngresso).join(",");
+        const res = await fetch(
+          `/api/ingressos?codigos=${encodeURIComponent(codesParam)}&_t=${Date.now()}`,
+          { cache: "no-store" },
+        );
         if (res.ok) {
           const data = (await res.json()) as {
-            entries?: Array<{ codigo: string; enteredAt: string }>;
+            tickets?: Array<{
+              codigo: string;
+              status: "pendente" | "aprovado" | "reprovado";
+              reviewedAt?: string;
+              reviewedBy?: string;
+              motivoReprovacao?: string;
+            }>;
           };
-          if (Array.isArray(data.entries)) {
-            setEnteredCodes((prev) => {
-              const next = { ...prev };
-              for (const entry of data.entries!) {
-                next[entry.codigo] = entry.enteredAt;
+          if (Array.isArray(data.tickets)) {
+            const next: Record<
+              string,
+              {
+                status: "pendente" | "aprovado" | "reprovado";
+                reviewedAt?: string;
+                reviewedBy?: string;
+                motivoReprovacao?: string;
               }
-              return next;
-            });
+            > = {};
+            for (const item of data.tickets) {
+              next[item.codigo] = {
+                status: item.status,
+                reviewedAt: item.reviewedAt,
+                reviewedBy: item.reviewedBy,
+                motivoReprovacao: item.motivoReprovacao,
+              };
+            }
+            setTicketStatuses(next);
           }
         }
       } catch {
@@ -181,32 +305,70 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       }
     };
 
-    const loadOfficialMatches = async () => {
+    const loadAdminSession = async () => {
       try {
-        const res = await fetch("/api/jogos");
+        const res = await fetch("/api/admin/login", { cache: "no-store" });
         if (res.ok) {
-          const data = (await res.json()) as { jogos?: OfficialMatch[] };
-          if (Array.isArray(data.jogos)) {
-            setOfficialMatches(data.jogos);
+          const data = (await res.json()) as {
+            authenticated?: boolean;
+            email?: string;
+          };
+          if (data.authenticated && data.email) {
+            setAdminSessionEmail(data.email);
+            return;
           }
         }
+        setAdminSessionEmail(null);
       } catch {
-        // Ignore network error
+        // ignore
+      } finally {
+        setSessionChecked(true);
       }
     };
 
-    const timer = window.setTimeout(syncState, 0);
-    void loadOfficialMatches();
-    void loadValidatedEntries();
+    const loadNetworkOrigin = async () => {
+      if (
+        typeof window === "undefined" ||
+        (window.location.hostname !== "localhost" &&
+          window.location.hostname !== "127.0.0.1")
+      ) {
+        return;
+      }
+      try {
+        const res = await fetch("/api/network");
+        if (res.ok) {
+          const data = (await res.json()) as { lanOrigin?: string | null };
+          if (data.lanOrigin) {
+            setLanOrigin(data.lanOrigin);
+          }
+        }
+      } catch {
+        // ignore
+      } finally {
+        setSessionChecked(true);
+      }
+    };
+
+    const timer = window.setTimeout(() => {
+      syncState();
+      void loadTicketStatuses();
+      void loadAdminSession();
+      void loadNetworkOrigin();
+      void refreshOfficialMatches();
+    }, 0);
+    const poll = window.setInterval(() => {
+      void loadTicketStatuses();
+    }, 5000);
     window.addEventListener("storage", syncState);
-    window.addEventListener("focus", loadValidatedEntries);
+    window.addEventListener("focus", loadTicketStatuses);
     return () => {
       window.clearTimeout(timer);
+      window.clearInterval(poll);
       window.removeEventListener("storage", syncState);
-      window.removeEventListener("focus", loadValidatedEntries);
+      window.removeEventListener("focus", loadTicketStatuses);
       stopCamera();
     };
-  }, [populateFormFromProfile, stopCamera]);
+  }, [populateFormFromProfile, refreshOfficialMatches, stopCamera]);
 
   // Measure real frame illumination & contrast quality from live video
   useEffect(() => {
@@ -340,48 +502,186 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     }
     ctx.drawImage(video, 0, 0, width, height);
     const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
-    const measuredQuality = liveQualityScore || 98.5;
-    stopCamera();
+    setFaceRejectionReasons([]);
+    setCameraError(null);
+    setValidatingFace(true);
 
-    if (cameraMode === "test") {
-      addSystemNotification({
-        categoria: "acesso",
-        selo: "CATRACA LIBERADA",
-        titulo: "Leitura Biométrica Validada pela Câmera",
-        mensagem: `Reconhecimento facial confirmado com ${measuredQuality}% de qualidade óptica no dispositivo.`,
-        detalheRodape: activeTicket
-          ? `Portão ${activeTicket.portao} • ${activeTicket.setor}`
-          : "Biometria facial validada no terminal",
-      });
-      setNotifications(getStoredNotifications());
-      setStatusToast(
-        `Leitura biométrica validada com ${measuredQuality}% de qualidade.`,
+    try {
+      // MODE 1: Live 1:1 Biometric Verification against Python SQLite Embedding
+      if (cameraMode === "test") {
+        const userEmail = profile?.email || loggedEmail || "";
+        const res = await fetch(
+          `${PYTHON_API_URL}/api/v1/biometria/verificar`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              email: userEmail,
+              imageDataUrl: dataUrl,
+            }),
+          },
+        );
+
+        const data = (await res.json()) as {
+          aprovado?: boolean;
+          similaridade?: number;
+          motivos?: string[];
+          checks?: Record<string, FaceCheckItem>;
+          detail?: string;
+        };
+
+        if (data.checks) setFaceChecks(data.checks);
+
+        if (!res.ok || !data.aprovado) {
+          setFaceRejectionReasons(
+            data.motivos && data.motivos.length > 0
+              ? data.motivos
+              : [data.detail || "Reconhecimento facial não aprovado."],
+          );
+          return;
+        }
+
+        stopCamera();
+        addSystemNotification({
+          categoria: "acesso",
+          selo: "CATRACA LIBERADA",
+          titulo: "Identidade Facial Confirmada (Python CV)",
+          mensagem: `Rosto validado com ${data.similaridade}% de similaridade com sua impressão facial única.`,
+          detalheRodape: activeTicket
+            ? `Portão ${activeTicket.portao} • ${activeTicket.setor}`
+            : "Biometria facial validada",
+        });
+        setNotifications(getStoredNotifications());
+        setStatusToast(
+          `Reconhecimento facial aprovado! Similaridade: ${data.similaridade}%.`,
+        );
+        return;
+      }
+
+      // MODE 2: Mandatory One-Time Registration validated by Python OpenCV Engine
+      if (pendingRegistration) {
+        const res = await fetch(`${PYTHON_API_URL}/api/v1/auth/cadastrar`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            nome: pendingRegistration.nome,
+            cpf: pendingRegistration.cpf,
+            email: pendingRegistration.email,
+            password: pendingRegistration.password,
+            matricula: pendingRegistration.matricula,
+            imageDataUrl: dataUrl,
+          }),
+        });
+
+        const data = (await res.json()) as {
+          cadastrado?: boolean;
+          checks?: Record<string, FaceCheckItem>;
+          user?: {
+            nome: string;
+            cpf: string;
+            email: string;
+            matricula: string;
+            faceFingerprintId: string;
+            faceHashSha256: string;
+            faceQualityScore: number;
+            faceImageDataUrl: string;
+            faceLocked: boolean;
+          };
+          detail?:
+            | string
+            | {
+                mensagem?: string;
+                motivos?: string[];
+                checks?: Record<string, FaceCheckItem>;
+              };
+        };
+
+        if (!res.ok || !data.cadastrado || !data.user) {
+          if (typeof data.detail === "object" && data.detail) {
+            if (data.detail.checks) setFaceChecks(data.detail.checks);
+            setFaceRejectionReasons(
+              data.detail.motivos && data.detail.motivos.length > 0
+                ? data.detail.motivos
+                : [
+                    data.detail.mensagem ||
+                      "Reconhecimento facial reprovado. Verifique iluminação, rosto descoberto, sem óculos e sem boné.",
+                  ],
+            );
+          } else {
+            setFaceRejectionReasons([
+              typeof data.detail === "string"
+                ? data.detail
+                : "Não foi possível validar sua biometria facial.",
+            ]);
+          }
+          return;
+        }
+
+        stopCamera();
+        if (data.checks) setFaceChecks(data.checks);
+
+        // Mirror validated account & immutable facial fingerprint locally
+        setLoggedUserEmail(data.user.email);
+        await registerUserAccount({
+          nome: data.user.nome,
+          email: data.user.email,
+          cpf: data.user.cpf,
+          password: pendingRegistration.password,
+          matricula: data.user.matricula,
+        });
+
+        const saved = await saveBiometricProfile({
+          nome: data.user.nome,
+          email: data.user.email,
+          cpf: data.user.cpf,
+          matricula: data.user.matricula,
+          faceImageDataUrl: data.user.faceImageDataUrl,
+          faceFingerprintId: data.user.faceFingerprintId,
+          faceQualityScore: data.user.faceQualityScore,
+          imageWidth: width,
+          imageHeight: height,
+          livenessVerified: true,
+          faceLocked: true,
+        });
+
+        addSystemNotification({
+          categoria: "acesso",
+          selo: "BIOMETRIA ÚNICA CADASTRADA",
+          titulo: `Conta e Biometria de ${saved.nome} aprovadas`,
+          mensagem: `Impressão facial única ${data.user.faceFingerprintId} registrada com ${data.user.faceQualityScore}% de qualidade e travada contra alterações.`,
+          detalheRodape: "Cadastro biométrico definitivo SDS-PE",
+        });
+
+        setProfile(saved);
+        populateFormFromProfile(saved);
+        setLoggedEmail(data.user.email);
+        setPendingRegistration(null);
+        setAuthPassword("");
+        setTickets(getStoredTickets(data.user.email));
+        setActiveTicketIndex(0);
+        setTicketStatuses({});
+        setNotifications(getStoredNotifications(data.user.email));
+        setStatusToast(
+          `Cadastro e reconhecimento facial aprovados! Impressão única: ${data.user.faceFingerprintId}.`,
+        );
+        setActiveTab("ingressos");
+        return;
+      }
+
+      // Immutable rule: registered users cannot overwrite their face
+      if (profile?.faceLocked || profile?.faceImageDataUrl) {
+        stopCamera();
+        setCameraError(
+          "Sua biometria facial já foi cadastrada definitivamente e não pode ser alterada.",
+        );
+        return;
+      }
+    } catch {
+      setCameraError(
+        `Não foi possível conectar ao servidor Python de reconhecimento facial (${PYTHON_API_URL}). Inicie o back-end Python para validar a biometria.`,
       );
-      return;
-    }
-
-    const saved = await saveBiometricProfile({
-      faceImageDataUrl: dataUrl,
-      faceQualityScore: measuredQuality,
-      imageWidth: width,
-      imageHeight: height,
-      livenessVerified: true,
-    });
-
-    addSystemNotification({
-      categoria: "acesso",
-      selo: "SEGURANÇA & SDS-PE",
-      titulo: "Biometria Facial Capturada e Criptografada",
-      mensagem: `Sua foto facial (${width}×${height}px) foi capturada pela câmera com ${measuredQuality}% de qualidade e hash SHA-256 gerado.`,
-      detalheRodape: "Pronto para o acesso sem filas",
-    });
-
-    setProfile(saved);
-    setNotifications(getStoredNotifications());
-    setStatusToast("Foto facial capturada pela câmera e salva com sucesso.");
-
-    if (!saved.nome) {
-      setActiveModal("perfil");
+    } finally {
+      setValidatingFace(false);
     }
   };
 
@@ -474,7 +774,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
 
     const randomCode = `PE-${Math.floor(100000 + Math.random() * 900000)}`;
 
-    saveTicketAccess({
+    const created = saveTicketAccess({
       matchId: selectedMatchForTicket.id,
       codigoIngresso: randomCode,
       competicao: selectedMatchForTicket.competicao,
@@ -482,9 +782,11 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       mandante: selectedMatchForTicket.mandante.nome,
       mandanteSigla: selectedMatchForTicket.mandante.sigla,
       mandanteCor: selectedMatchForTicket.mandante.corPrimaria,
+      mandanteLogoUrl: selectedMatchForTicket.mandante.logoUrl,
       visitante: selectedMatchForTicket.visitante.nome,
       visitanteSigla: selectedMatchForTicket.visitante.sigla,
       visitanteCor: selectedMatchForTicket.visitante.corPrimaria,
+      visitanteLogoUrl: selectedMatchForTicket.visitante.logoUrl,
       estadio: selectedMatchForTicket.estadio,
       dataHorario: selectedMatchForTicket.dataFormatada,
       aberturaPortoes: selectedMatchForTicket.aberturaPortoes,
@@ -499,6 +801,28 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       fonte: selectedMatchForTicket.fonte,
     });
 
+    // Register on server so Admin immediately sees it in Lista de Bilhetes
+    void fetch("/api/ingressos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        codigo: created.codigoIngresso,
+        matchId: created.matchId,
+        competicao: created.competicao,
+        jogo: `${created.mandante} x ${created.visitante}`,
+        estadio: created.estadio,
+        dataHorario: created.dataHorario,
+        setor: created.setor,
+        subsetor: created.subsetor,
+        portao: created.portao,
+        enderecoPortao: created.enderecoPortao,
+        titular: profile?.nome || "Titular não informado",
+        cpf: profile?.cpf || "",
+        userEmail: profile?.email || loggedEmail || "",
+        biometriaOk: hasFaceRegistered,
+      }),
+    }).catch(() => {});
+
     const updatedTickets = getStoredTickets();
     setTickets(updatedTickets);
     setActiveTicketIndex(0);
@@ -510,19 +834,187 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
   };
 
   const buildValidationUrl = (ticket: TicketAccess) => {
-    const origin = typeof window !== "undefined" ? window.location.origin : "";
-    const params = new URLSearchParams({
-      codigo: ticket.codigoIngresso,
-      jogo: `${ticket.mandante} x ${ticket.visitante}`,
-      estadio: ticket.estadio,
-      portao: ticket.portao,
-      setor: ticket.setor,
-      data: ticket.dataHorario,
-      titular: profile?.nome || "Titular não informado",
-      cpf: profile?.cpf || "",
-      bio: hasFaceRegistered ? "1" : "0",
+    const browserOrigin =
+      typeof window !== "undefined" ? window.location.origin : "";
+    const isLocalhost =
+      typeof window !== "undefined" &&
+      (window.location.hostname === "localhost" ||
+        window.location.hostname === "127.0.0.1");
+    const baseOrigin = isLocalhost && lanOrigin ? lanOrigin : browserOrigin;
+    return `${baseOrigin}/validar?codigo=${encodeURIComponent(ticket.codigoIngresso)}`;
+  };
+
+  const handlePerfilLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setAuthLoading(true);
+
+    try {
+      // First check if credentials belong to Admin (/api/admin/login)
+      const adminRes = await fetch("/api/admin/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: authEmail.trim(),
+          password: authPassword,
+        }),
+      });
+
+      if (adminRes.ok) {
+        router.push("/admin");
+        return;
+      }
+
+      // Next authenticate Torcedor against Python FastAPI SQLite back-end
+      try {
+        const pyRes = await fetch(`${PYTHON_API_URL}/api/v1/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: authEmail.trim(),
+            password: authPassword,
+          }),
+        });
+
+        if (pyRes.ok) {
+          const pyData = (await pyRes.json()) as {
+            user: {
+              nome: string;
+              cpf: string;
+              email: string;
+              matricula: string;
+              faceFingerprintId: string;
+              faceQualityScore: number;
+              faceImageDataUrl: string;
+              faceLocked: boolean;
+            };
+          };
+          const saved = await saveBiometricProfile({
+            nome: pyData.user.nome,
+            cpf: pyData.user.cpf,
+            email: pyData.user.email,
+            matricula: pyData.user.matricula,
+            faceFingerprintId: pyData.user.faceFingerprintId,
+            faceQualityScore: pyData.user.faceQualityScore,
+            faceImageDataUrl: pyData.user.faceImageDataUrl,
+            livenessVerified: true,
+            faceLocked: pyData.user.faceLocked,
+          });
+          setLoggedUserEmail(pyData.user.email);
+          setProfile(saved);
+          populateFormFromProfile(saved);
+          setLoggedEmail(pyData.user.email);
+          const userTickets = getStoredTickets(pyData.user.email);
+          setTickets(userTickets);
+          setActiveTicketIndex(0);
+          setTicketStatuses({});
+          setNotifications(getStoredNotifications(pyData.user.email));
+          for (const t of userTickets) {
+            void fetch("/api/ingressos", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                codigo: t.codigoIngresso,
+                matchId: t.matchId,
+                competicao: t.competicao,
+                jogo: `${t.mandante} x ${t.visitante}`,
+                estadio: t.estadio,
+                dataHorario: t.dataHorario,
+                setor: t.setor,
+                subsetor: t.subsetor,
+                portao: t.portao,
+                enderecoPortao: t.enderecoPortao,
+                titular: saved.nome || "Titular não informado",
+                cpf: saved.cpf || "",
+                userEmail: pyData.user.email,
+                biometriaOk: Boolean(saved.faceImageDataUrl),
+              }),
+            }).catch(() => {});
+          }
+          setAuthPassword("");
+          setActiveTab("ingressos");
+          setStatusToast(`Bem-vindo(a), ${pyData.user.nome}!`);
+          return;
+        }
+      } catch {
+        // Fallback to local stored account if Python API is unreachable
+      }
+
+      // Local fallback check
+      const userRes = await loginUserAccount(authEmail, authPassword);
+      if (!userRes.ok) {
+        setAuthError(userRes.error);
+        return;
+      }
+
+      const updatedProfile = getStoredProfile(userRes.account.email);
+      setProfile(updatedProfile);
+      populateFormFromProfile(updatedProfile);
+      setLoggedEmail(userRes.account.email);
+      setTickets(getStoredTickets(userRes.account.email));
+      setActiveTicketIndex(0);
+      setTicketStatuses({});
+      setNotifications(getStoredNotifications(userRes.account.email));
+      setAuthPassword("");
+      setActiveTab("ingressos");
+      setStatusToast(`Bem-vindo(a), ${userRes.account.nome}!`);
+    } catch {
+      setAuthError("Não foi possível realizar o login.");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handlePerfilRegister = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+
+    if (!authNome.trim() || authNome.trim().length < 3) {
+      setAuthError("Informe seu nome completo.");
+      return;
+    }
+
+    if (!isValidCPF(authCpf)) {
+      setAuthError("Informe um CPF válido (11 dígitos).");
+      return;
+    }
+
+    if (!authEmail.trim() || !authPassword || authPassword.length < 4) {
+      setAuthError(
+        "Informe um e-mail válido e uma senha com pelo menos 4 caracteres.",
+      );
+      return;
+    }
+
+    // Registration only finishes after mandatory facial recognition capture
+    // Clear any previous account's profile/photo/tickets/notifications from view
+    setProfile(null);
+    setTickets([]);
+    setNotifications([]);
+    setTicketStatuses({});
+    setActiveTicketIndex(0);
+    setFaceChecks(null);
+    setFaceRejectionReasons([]);
+    setPendingRegistration({
+      nome: authNome.trim(),
+      email: authEmail.trim().toLowerCase(),
+      cpf: formatCPF(authCpf),
+      password: authPassword,
+      matricula: authMatricula.trim(),
     });
-    return `${origin}/validar?${params.toString()}`;
+    setActiveTab("biometria");
+    setStatusToast(
+      "Etapa final do cadastro: capture sua face na câmera para concluir sua conta.",
+    );
+    window.setTimeout(() => {
+      void startCamera("capture", "user");
+    }, 150);
+  };
+
+  const handleAdminLogout = async () => {
+    await fetch("/api/admin/login", { method: "DELETE" });
+    setAdminSessionEmail(null);
+    setStatusToast("Sessão do Administrador encerrada.");
   };
 
   const handleCopyTicketCode = async (code: string) => {
@@ -565,8 +1057,8 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
 
   const filteredMatches = officialMatches.filter((m) => {
     if (matchFilter === "ilha") return m.destaqueIlha;
-    if (matchFilter === "recife") return m.cidade.includes("Recife");
-    if (matchFilter === "interior") return !m.cidade.includes("Recife");
+    if (matchFilter === "pe") return m.regiao === "pe";
+    if (matchFilter === "brasil") return m.regiao === "brasil";
     return true;
   });
 
@@ -604,6 +1096,15 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     notifFilter === "todas"
       ? notifications
       : notifications.filter((n) => n.categoria === notifFilter);
+
+  // Mandatory Entry Gate: visitors MUST login (User or ADM) or complete Registration + Facial Recognition first
+  const requiresOnboardingGate =
+    sessionChecked && !loggedEmail && !adminSessionEmail;
+  const effectiveTab: AppTab = requiresOnboardingGate
+    ? pendingRegistration
+      ? "biometria"
+      : "perfil"
+    : activeTab;
 
   return (
     <div className="min-h-screen w-full bg-[#faf8ff] text-[#131b2e] flex flex-col justify-between pb-24 md:pb-12 select-none">
@@ -665,33 +1166,44 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
             </div>
           </button>
 
-          {/* Center: Desktop Navigation Links (md+) */}
-          <nav
-            aria-label="Navegação desktop"
-            className="hidden md:flex items-center gap-1 lg:gap-2 bg-[#f2f3ff] p-1.5 rounded-2xl"
-          >
-            {(
-              [
-                { id: "ingressos", label: "Ingressos" },
-                { id: "biometria", label: "Biometria" },
-                { id: "notificacoes", label: "Notificações" },
-                { id: "perfil", label: "Perfil" },
-              ] as { id: AppTab; label: string }[]
-            ).map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => handleSwitchTab(item.id)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs cursor-pointer transition-all ${
-                  activeTab === item.id
-                    ? "bg-white text-[#016294] font-extrabold shadow-2xs"
-                    : "text-[#4e5462] hover:text-[#131b2e] hover:bg-white/60 font-semibold"
-                }`}
-              >
-                <span>{item.label}</span>
-              </button>
-            ))}
-          </nav>
+          {/* Center: Desktop Navigation Links (hidden while user is in mandatory onboarding gate) */}
+          {!requiresOnboardingGate && (
+            <nav
+              aria-label="Navegação desktop"
+              className="hidden md:flex items-center gap-1 lg:gap-2 bg-[#f2f3ff] p-1.5 rounded-2xl"
+            >
+              {(
+                [
+                  { id: "ingressos", label: "Ingressos" },
+                  { id: "biometria", label: "Biometria" },
+                  { id: "notificacoes", label: "Notificações" },
+                  { id: "perfil", label: "Perfil" },
+                ] as { id: AppTab; label: string }[]
+              ).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => handleSwitchTab(item.id)}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs cursor-pointer transition-all ${
+                    effectiveTab === item.id
+                      ? "bg-white text-[#016294] font-extrabold shadow-2xs"
+                      : "text-[#4e5462] hover:text-[#131b2e] hover:bg-white/60 font-semibold"
+                  }`}
+                >
+                  <span>{item.label}</span>
+                </button>
+              ))}
+              {adminSessionEmail && (
+                <button
+                  type="button"
+                  onClick={() => router.push("/admin")}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-extrabold bg-[#016294] text-white hover:bg-[#01537e] cursor-pointer transition-all"
+                >
+                  <span>Painel ADM</span>
+                </button>
+              )}
+            </nav>
+          )}
 
           {/* Right: Bell & User Avatar (Displays real captured photo or neutral user icon) */}
           <div className="flex items-center gap-3 sm:gap-4">
@@ -790,7 +1302,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         {/* =========================================================
             SCREEN 1: INGRESSOS (100% Real User-Entered Data)
            ========================================================= */}
-        {activeTab === "ingressos" && (
+        {effectiveTab === "ingressos" && (
           <>
             <div className="flex items-start justify-between gap-3">
               <div className="flex flex-col">
@@ -948,19 +1460,13 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
               {/* Teams Matchup Section */}
               <div className="px-4 sm:px-6 md:px-8 pt-5 sm:pt-6 pb-4 sm:pb-5 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0">
-                  <div
-                    className="w-11 h-11 sm:w-14 sm:h-14 rounded-full border border-[#e5e7eb] shadow-xs flex items-center justify-center shrink-0 text-xs sm:text-sm font-extrabold uppercase"
-                    style={
-                      activeTicket?.mandanteCor
-                        ? {
-                            backgroundColor: activeTicket.mandanteCor,
-                            color: "#ffffff",
-                          }
-                        : { backgroundColor: "#f2f3ff", color: "#016294" }
-                    }
-                  >
-                    {activeTicket?.mandanteSigla || "—"}
-                  </div>
+                  <ClubCrest
+                    sigla={activeTicket?.mandanteSigla}
+                    nome={activeTicket?.mandante}
+                    corPrimaria={activeTicket?.mandanteCor}
+                    logoUrl={activeTicket?.mandanteLogoUrl}
+                    size="lg"
+                  />
                   <div className="flex flex-col min-w-0">
                     <span className="text-[14.5px] sm:text-lg md:text-xl font-extrabold text-[#131b2e] leading-tight truncate">
                       {activeTicket?.mandante || "Escolha um jogo abaixo"}
@@ -986,19 +1492,13 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                       VISITANTE
                     </span>
                   </div>
-                  <div
-                    className="w-11 h-11 sm:w-14 sm:h-14 rounded-full border border-[#e5e7eb] shadow-xs flex items-center justify-center shrink-0 text-xs sm:text-sm font-extrabold uppercase"
-                    style={
-                      activeTicket?.visitanteCor
-                        ? {
-                            backgroundColor: activeTicket.visitanteCor,
-                            color: "#ffffff",
-                          }
-                        : { backgroundColor: "#f2f3ff", color: "#4e5462" }
-                    }
-                  >
-                    {activeTicket?.visitanteSigla || "—"}
-                  </div>
+                  <ClubCrest
+                    sigla={activeTicket?.visitanteSigla}
+                    nome={activeTicket?.visitante}
+                    corPrimaria={activeTicket?.visitanteCor}
+                    logoUrl={activeTicket?.visitanteLogoUrl}
+                    size="lg"
+                  />
                 </div>
               </div>
 
@@ -1142,14 +1642,72 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                 </div>
               </div>
 
+              {/* Real Admin Approval / Rejection Status Banner on Active Ticket Card */}
+              {activeTicket &&
+                ticketStatuses[activeTicket.codigoIngresso]?.status ===
+                  "reprovado" && (
+                  <div className="mx-4 sm:mx-6 md:mx-8 mt-4 rounded-2xl bg-[#ffdad6] border border-[#93000a]/30 p-4 text-left">
+                    <p className="text-xs sm:text-sm font-extrabold text-[#93000a] uppercase">
+                      ✕ ENTRADA BLOQUEADA — INGRESSO REPROVADO PELO ADM
+                    </p>
+                    <p className="text-xs font-semibold text-[#93000a] mt-1">
+                      Motivo:{" "}
+                      {ticketStatuses[activeTicket.codigoIngresso]
+                        .motivoReprovacao ||
+                        "Entrada não autorizada pela administração."}
+                    </p>
+                    <p className="text-[11px] text-[#7a0008] mt-1">
+                      Este ingresso não permite entrada na arena. Procure o
+                      suporte ou aguarde nova liberação do administrador.
+                    </p>
+                  </div>
+                )}
+
+              {activeTicket &&
+                ticketStatuses[activeTicket.codigoIngresso]?.status ===
+                  "aprovado" && (
+                  <div className="mx-4 sm:mx-6 md:mx-8 mt-4 rounded-2xl bg-[#d4f4e4] border border-[#006c4a]/30 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs sm:text-sm font-extrabold text-[#005236] uppercase">
+                        ✓ ENTRADA APROVADA — VOCÊ PODE ENTRAR NA ARENA
+                      </p>
+                      <p className="text-[11px] font-semibold text-[#006c4a] mt-0.5">
+                        Validado pelo ADM • Portão {activeTicket.portao} (
+                        {activeTicket.setor})
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTicketForCodeModal(activeTicket);
+                        setActiveModal("codigo-arena");
+                      }}
+                      className="bg-[#006c4a] hover:bg-[#00583c] text-white font-extrabold text-xs px-4 py-2.5 rounded-xl cursor-pointer shrink-0 transition-colors"
+                    >
+                      Ver Comprovante de Entrada
+                    </button>
+                  </div>
+                )}
+
               <div className="px-4 sm:px-6 md:px-8 mt-4 sm:mt-6 flex flex-col sm:flex-row gap-3">
                 <button
                   type="button"
+                  disabled={
+                    Boolean(activeTicket) &&
+                    ticketStatuses[activeTicket!.codigoIngresso]?.status ===
+                      "reprovado"
+                  }
                   onClick={() => handleSwitchTab("biometria")}
-                  className="flex-1 bg-[#016294] hover:bg-[#01537e] active:scale-[0.99] transition-all text-white rounded-xl sm:rounded-2xl py-3.5 sm:py-4 px-4 flex items-center justify-center gap-2.5 shadow-xs cursor-pointer"
+                  className={`flex-1 transition-all rounded-xl sm:rounded-2xl py-3.5 sm:py-4 px-4 flex items-center justify-center gap-2.5 shadow-xs ${
+                    activeTicket &&
+                    ticketStatuses[activeTicket.codigoIngresso]?.status ===
+                      "reprovado"
+                      ? "bg-[#d5d8e2] text-[#4e5462] cursor-not-allowed"
+                      : "bg-[#016294] hover:bg-[#01537e] active:scale-[0.99] text-white cursor-pointer"
+                  }`}
                 >
                   <svg
-                    className="w-4 h-4 sm:w-5 sm:h-5 text-white shrink-0"
+                    className="w-4 h-4 sm:w-5 sm:h-5 shrink-0"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
@@ -1165,7 +1723,11 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     <path d="M8.5 16.5a4.5 4.5 0 0 1 7 0" />
                   </svg>
                   <span className="text-[11.5px] sm:text-xs md:text-sm font-extrabold uppercase tracking-[0.04em]">
-                    ACESSAR PASSE FACIAL DIGITAL
+                    {activeTicket &&
+                    ticketStatuses[activeTicket.codigoIngresso]?.status ===
+                      "reprovado"
+                      ? "ENTRADA BLOQUEADA NA CATRACA"
+                      : "ACESSAR PASSE FACIAL DIGITAL"}
                   </span>
                 </button>
 
@@ -1176,7 +1738,15 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                       setTicketForCodeModal(activeTicket);
                       setActiveModal("codigo-arena");
                     }}
-                    className="bg-[#e6f0f5] hover:bg-[#d5e7f0] active:scale-[0.99] transition-all text-[#016294] rounded-xl sm:rounded-2xl py-3.5 sm:py-4 px-5 flex items-center justify-center gap-2 cursor-pointer shrink-0"
+                    className={`active:scale-[0.99] transition-all rounded-xl sm:rounded-2xl py-3.5 sm:py-4 px-5 flex items-center justify-center gap-2 cursor-pointer shrink-0 ${
+                      ticketStatuses[activeTicket.codigoIngresso]?.status ===
+                      "aprovado"
+                        ? "bg-[#006c4a] hover:bg-[#00583c] text-white"
+                        : ticketStatuses[activeTicket.codigoIngresso]
+                              ?.status === "reprovado"
+                          ? "bg-[#ffdad6] text-[#93000a]"
+                          : "bg-[#e6f0f5] hover:bg-[#d5e7f0] text-[#016294]"
+                    }`}
                   >
                     <svg
                       className="w-4 h-4 sm:w-5 sm:h-5 shrink-0"
@@ -1193,7 +1763,13 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                       <rect x="3" y="14" width="7" height="7" />
                     </svg>
                     <span className="text-[11.5px] sm:text-xs md:text-sm font-extrabold uppercase tracking-[0.04em]">
-                      VER CÓDIGO ({activeTicket.codigoIngresso})
+                      {ticketStatuses[activeTicket.codigoIngresso]?.status ===
+                      "aprovado"
+                        ? "COMPROVANTE ✓"
+                        : ticketStatuses[activeTicket.codigoIngresso]
+                              ?.status === "reprovado"
+                          ? "VER MOTIVO ✕"
+                          : `VER CÓDIGO (${activeTicket.codigoIngresso})`}
                     </span>
                   </button>
                 )}
@@ -1293,14 +1869,22 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                         </div>
                         <span
                           className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full shrink-0 ${
-                            enteredCodes[t.codigoIngresso]
+                            ticketStatuses[t.codigoIngresso]?.status ===
+                            "aprovado"
                               ? "bg-[#006c4a] text-white"
-                              : "bg-[#89f5c8] text-[#005236]"
+                              : ticketStatuses[t.codigoIngresso]?.status ===
+                                  "reprovado"
+                                ? "bg-[#93000a] text-white"
+                                : "bg-[#89f5c8] text-[#005236]"
                           }`}
                         >
-                          {enteredCodes[t.codigoIngresso]
-                            ? "ENTROU NO JOGO ✓"
-                            : "VÁLIDO"}
+                          {ticketStatuses[t.codigoIngresso]?.status ===
+                          "aprovado"
+                            ? "ENTRADA APROVADA ✓"
+                            : ticketStatuses[t.codigoIngresso]?.status ===
+                                "reprovado"
+                              ? "ENTRADA REPROVADA ✕"
+                              : "AGUARDANDO ADM"}
                         </span>
                       </div>
 
@@ -1328,6 +1912,15 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                         </button>
                       </div>
 
+                      {ticketStatuses[t.codigoIngresso]?.status ===
+                        "reprovado" && (
+                        <div className="rounded-xl bg-[#ffdad6] px-3 py-2 text-[11px] font-bold text-[#93000a]">
+                          Entrada bloqueada:{" "}
+                          {ticketStatuses[t.codigoIngresso].motivoReprovacao ||
+                            "Reprovado pelo ADM"}
+                        </div>
+                      )}
+
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
@@ -1336,9 +1929,23 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                             setTicketForCodeModal(t);
                             setActiveModal("codigo-arena");
                           }}
-                          className="flex-1 bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs py-2.5 px-3 rounded-xl transition-colors cursor-pointer"
+                          className={`flex-1 font-extrabold text-xs py-2.5 px-3 rounded-xl transition-colors cursor-pointer ${
+                            ticketStatuses[t.codigoIngresso]?.status ===
+                            "aprovado"
+                              ? "bg-[#006c4a] hover:bg-[#00583c] text-white"
+                              : ticketStatuses[t.codigoIngresso]?.status ===
+                                  "reprovado"
+                                ? "bg-[#93000a] text-white"
+                                : "bg-[#016294] hover:bg-[#01537e] text-white"
+                          }`}
                         >
-                          Abrir QR Code / Catraca
+                          {ticketStatuses[t.codigoIngresso]?.status ===
+                          "aprovado"
+                            ? "Ver Comprovante ✓"
+                            : ticketStatuses[t.codigoIngresso]?.status ===
+                                "reprovado"
+                              ? "Ver Motivo da Reprovação"
+                              : "Abrir QR Code / Catraca"}
                         </button>
                         <button
                           type="button"
@@ -1359,28 +1966,35 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
               )}
             </section>
 
-            {/* Official Upcoming Matches Catalog (FPF-PE & Ilha do Retiro) */}
+            {/* Official Upcoming Matches Catalog (Brasil Ao Vivo + Pernambuco) */}
             <section className="mt-7 flex flex-col">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
                 <div>
-                  <h2 className="text-base sm:text-lg font-extrabold text-[#131b2e] tracking-tight">
-                    Próximos Jogos Oficiais em Pernambuco
-                  </h2>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="text-base sm:text-lg font-extrabold text-[#131b2e] tracking-tight">
+                      Próximos Jogos Oficiais (Brasil & Pernambuco)
+                    </h2>
+                    <span className="inline-flex items-center gap-1 rounded-full bg-[#d4f4e4] px-2.5 py-0.5 text-[10px] font-extrabold text-[#005236] uppercase">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#006c4a] animate-pulse" />
+                      Atualização Automática
+                    </span>
+                  </div>
                   <p className="text-xs text-[#4e5462] mt-0.5">
-                    Base oficial da Federação Pernambucana de Futebol (FPF-PE) e
-                    Estádio da Ilha do Retiro. Escolha uma partida para gerar
-                    seu ingresso.
+                    Partidas reais conectadas ao vivo via ESPN Brasil (Série A,
+                    Série B, Libertadores, Sul-Americana) e base oficial FPF-PE
+                    / Ilha do Retiro. Escolha uma partida para gerar seu
+                    ingresso individual.
                   </p>
                 </div>
 
-                {/* Match Region Filters */}
+                {/* Match Region Filters + Refresh */}
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
                   {(
                     [
-                      { id: "todos", label: "Todos PE" },
+                      { id: "todos", label: "Todos Brasil" },
+                      { id: "brasil", label: "Nacional / Série A-B" },
+                      { id: "pe", label: "Pernambuco (PE)" },
                       { id: "ilha", label: "Ilha do Retiro" },
-                      { id: "recife", label: "Recife" },
-                      { id: "interior", label: "Interior" },
                     ] as { id: MatchFilter; label: string }[]
                   ).map((f) => (
                     <button
@@ -1396,6 +2010,14 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                       {f.label}
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    disabled={loadingMatches}
+                    onClick={() => void refreshOfficialMatches()}
+                    className="px-3 py-1.5 rounded-full text-xs font-extrabold whitespace-nowrap bg-[#e6f0f5] hover:bg-[#d5e7f0] text-[#016294] cursor-pointer transition-colors disabled:opacity-60"
+                  >
+                    {loadingMatches ? "Atualizando..." : "↻ Atualizar Jogos"}
+                  </button>
                 </div>
               </div>
 
@@ -1420,24 +2042,27 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                           <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#016294] bg-[#e6f0f5] px-2.5 py-0.5 rounded-full truncate">
                             {match.competicao}
                           </span>
-                          {match.destaqueIlha && (
+                          {match.aoVivoApi ? (
+                            <span className="text-[9.5px] font-extrabold uppercase tracking-wider text-[#005236] bg-[#d4f4e4] px-2.5 py-0.5 rounded-full shrink-0">
+                              ESPN • AO VIVO
+                            </span>
+                          ) : match.destaqueIlha ? (
                             <span className="text-[9.5px] font-extrabold uppercase tracking-wider text-[#93000a] bg-[#ffdad6] px-2.5 py-0.5 rounded-full shrink-0">
                               ILHA DO RETIRO
                             </span>
-                          )}
+                          ) : null}
                         </div>
 
                         {/* Clubs Row */}
                         <div className="flex items-center justify-between gap-2 my-3">
                           <div className="flex items-center gap-2 min-w-0">
-                            <span
-                              className="w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-extrabold text-white shrink-0 shadow-2xs"
-                              style={{
-                                backgroundColor: match.mandante.corPrimaria,
-                              }}
-                            >
-                              {match.mandante.sigla}
-                            </span>
+                            <ClubCrest
+                              sigla={match.mandante.sigla}
+                              nome={match.mandante.nome}
+                              corPrimaria={match.mandante.corPrimaria}
+                              logoUrl={match.mandante.logoUrl}
+                              size="sm"
+                            />
                             <span className="text-xs sm:text-sm font-extrabold text-[#131b2e] truncate">
                               {match.mandante.nome}
                             </span>
@@ -1451,14 +2076,13 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                             <span className="text-xs sm:text-sm font-extrabold text-[#131b2e] truncate text-right">
                               {match.visitante.nome}
                             </span>
-                            <span
-                              className="w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-extrabold text-white shrink-0 shadow-2xs"
-                              style={{
-                                backgroundColor: match.visitante.corPrimaria,
-                              }}
-                            >
-                              {match.visitante.sigla}
-                            </span>
+                            <ClubCrest
+                              sigla={match.visitante.sigla}
+                              nome={match.visitante.nome}
+                              corPrimaria={match.visitante.corPrimaria}
+                              logoUrl={match.visitante.logoUrl}
+                              size="sm"
+                            />
                           </div>
                         </div>
 
@@ -1474,7 +2098,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                             {match.estadio} • {match.cidade}
                           </p>
                           <p className="text-[10px] text-[#4e5462] truncate">
-                            {match.rodada}
+                            {match.rodada} • Fonte: {match.fonte}
                           </p>
                         </div>
                       </div>
@@ -1503,8 +2127,37 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         {/* =========================================================
             SCREEN 2: BIOMETRIA FACIAL (Real Device Camera & Real Metrics)
            ========================================================= */}
-        {activeTab === "biometria" && (
+        {effectiveTab === "biometria" && (
           <div className="flex flex-col">
+            {pendingRegistration && (
+              <div className="mb-5 rounded-2xl bg-[#016294] text-white p-4 sm:p-5 shadow-md flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <span className="text-[10px] font-extrabold uppercase tracking-widest bg-white/20 px-2.5 py-0.5 rounded-full">
+                    ETAPA 2 DE 2 • OBRIGATÓRIA
+                  </span>
+                  <h2 className="text-sm sm:text-base font-extrabold mt-1.5">
+                    Finalize o cadastro de {pendingRegistration.nome} com sua
+                    Biometria Facial
+                  </h2>
+                  <p className="text-xs text-white/85 mt-0.5">
+                    Sua conta só será concluída após capturar seu rosto pela
+                    câmera abaixo.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    stopCamera();
+                    setPendingRegistration(null);
+                    setActiveTab("perfil");
+                  }}
+                  className="self-start sm:self-auto bg-white/15 hover:bg-white/25 text-white text-xs font-bold px-3.5 py-2 rounded-xl cursor-pointer shrink-0"
+                >
+                  Cancelar Cadastro
+                </button>
+              </div>
+            )}
+
             <div className="inline-flex items-center gap-1.5 self-start rounded-full bg-[#e6f0f5] px-3 py-1 text-[10px] sm:text-[11px] font-extrabold uppercase tracking-[0.04em] text-[#016294]">
               <svg
                 className="w-3.5 h-3.5 text-[#016294] shrink-0"
@@ -1577,7 +2230,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                           facingMode === "user" ? "-scale-x-100" : ""
                         }`}
                       />
-                    ) : profile?.faceImageDataUrl ? (
+                    ) : !pendingRegistration && profile?.faceImageDataUrl ? (
                       /* eslint-disable-next-line @next/next/no-img-element */
                       <img
                         src={profile.faceImageDataUrl}
@@ -1668,13 +2321,53 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     </div>
                   )}
 
+                  {/* Python OpenCV Real Validation Rejection Reasons */}
+                  {faceRejectionReasons.length > 0 && (
+                    <div className="mt-3 rounded-2xl bg-[#ffdad6] border border-[#93000a]/25 p-3.5 flex flex-col gap-1.5">
+                      <p className="text-xs font-extrabold text-[#93000a] uppercase">
+                        ✕ Reconhecimento Facial Reprovado — Corrija para
+                        validar:
+                      </p>
+                      <ul className="list-disc pl-4 text-xs font-semibold text-[#7a0008] flex flex-col gap-1">
+                        {faceRejectionReasons.map((reason, idx) => (
+                          <li key={idx}>{reason}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Python OpenCV 6-Point Computer Vision Checklist */}
+                  {faceChecks && (
+                    <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {Object.entries(faceChecks).map(([key, check]) => (
+                        <div
+                          key={key}
+                          className={`rounded-xl px-3 py-2 text-[10.5px] font-bold border ${
+                            check.ok
+                              ? "bg-[#d4f4e4] border-[#006c4a]/20 text-[#005236]"
+                              : "bg-[#ffdad6] border-[#93000a]/20 text-[#93000a]"
+                          }`}
+                        >
+                          <span className="block font-extrabold">
+                            {check.ok ? "✓" : "✕"}{" "}
+                            {key.replace(/_/g, " ").toUpperCase()}
+                          </span>
+                          <span className="text-[10px] font-medium opacity-90">
+                            {check.detalhe}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   {/* Active Camera Controls */}
                   {cameraActive && (
                     <div className="mt-3.5 flex flex-wrap items-center gap-2.5">
                       <button
                         type="button"
+                        disabled={validatingFace}
                         onClick={handleCapturePhoto}
-                        className="flex-1 bg-[#006c4a] hover:bg-[#00583c] text-white font-extrabold text-xs uppercase tracking-wider py-3.5 px-4 rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                        className="flex-1 bg-[#006c4a] hover:bg-[#00583c] disabled:opacity-60 text-white font-extrabold text-xs uppercase tracking-wider py-3.5 px-4 rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-colors"
                       >
                         <svg
                           className="w-4 h-4"
@@ -1689,9 +2382,11 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                           <circle cx="12" cy="12" r="4" />
                         </svg>
                         <span>
-                          {cameraMode === "test"
-                            ? "Confirmar Leitura Biométrica"
-                            : "Capturar e Salvar Biometria"}
+                          {validatingFace
+                            ? "Validando no Back-end Python..."
+                            : cameraMode === "test"
+                              ? "Validar Rosto na Câmera"
+                              : "Capturar e Validar Biometria"}
                         </span>
                       </button>
                       <button
@@ -1840,29 +2535,59 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => startCamera("capture", facingMode)}
-                    className="mt-4 w-full bg-[#faf8ff] hover:bg-[#f2f3ff] border border-[#eceaf6] text-[#131b2e] rounded-xl py-3 px-4 flex items-center justify-center gap-2 text-xs font-extrabold transition-colors cursor-pointer"
-                  >
-                    <svg
-                      className="w-4 h-4 text-[#016294] shrink-0"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2.2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
+                  {/* Immutable One-Time Registration Rule: Cannot change face once registered */}
+                  {hasFaceRegistered && !pendingRegistration ? (
+                    <div className="mt-4 w-full bg-[#f2f3ff] border border-[#006c4a]/25 text-[#005236] rounded-xl py-3 px-4 flex items-center justify-center gap-2 text-xs font-extrabold text-center">
+                      <svg
+                        className="w-4 h-4 text-[#006c4a] shrink-0"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <rect
+                          x="3"
+                          y="11"
+                          width="18"
+                          height="11"
+                          rx="2"
+                          ry="2"
+                        />
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                      </svg>
+                      <span>
+                        Biometria Facial Definitiva (Cadastro Único
+                        {profile?.faceFingerprintId
+                          ? ` • ${profile.faceFingerprintId}`
+                          : ""}
+                        ) — Não pode ser alterada
+                      </span>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => startCamera("capture", facingMode)}
+                      className="mt-4 w-full bg-[#faf8ff] hover:bg-[#f2f3ff] border border-[#eceaf6] text-[#131b2e] rounded-xl py-3 px-4 flex items-center justify-center gap-2 text-xs font-extrabold transition-colors cursor-pointer"
                     >
-                      <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" />
-                      <circle cx="12" cy="13" r="3" />
-                    </svg>
-                    <span>
-                      {hasFaceRegistered
-                        ? "Recadastrar Face / Nova Foto"
-                        : "Cadastrar Face / Nova Foto"}
-                    </span>
-                  </button>
+                      <svg
+                        className="w-4 h-4 text-[#016294] shrink-0"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" />
+                        <circle cx="12" cy="13" r="3" />
+                      </svg>
+                      <span>
+                        Ativar Câmera para Cadastro Facial Obrigatório
+                      </span>
+                    </button>
+                  )}
                 </section>
 
                 <button
@@ -2029,7 +2754,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         {/* =========================================================
             SCREEN 3: NOTIFICAÇÕES (100% Real User Events & Notices)
            ========================================================= */}
-        {activeTab === "notificacoes" && (
+        {effectiveTab === "notificacoes" && (
           <div className="flex flex-col">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -2341,9 +3066,256 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         )}
 
         {/* =========================================================
-            SCREEN 4: PERFIL (Full-Screen Adaptive Layout, 100% Real Data)
+            SCREEN 4: PERFIL (Admin Active Session / Login-Cadastro / User Profile)
            ========================================================= */}
-        {activeTab === "perfil" && (
+        {effectiveTab === "perfil" && adminSessionEmail && !loggedEmail && (
+          <div className="w-full max-w-lg mx-auto py-4 sm:py-8">
+            <section className="bg-white rounded-[28px] shadow-[0_8px_32px_rgba(19,27,46,0.08)] p-6 sm:p-8 border border-[#eceaf6] text-center">
+              <div className="w-14 h-14 mx-auto rounded-2xl bg-[#016294] text-white flex items-center justify-center font-extrabold text-sm mb-3">
+                ADM
+              </div>
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-[#89f5c8] px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider text-[#005236]">
+                SESSÃO ADMINISTRATIVA ATIVA
+              </span>
+              <h1 className="text-xl font-extrabold text-[#131b2e] mt-3">
+                Administrador Autenticado
+              </h1>
+              <p className="text-xs text-[#4e5462] mt-1">{adminSessionEmail}</p>
+
+              <div className="mt-6 flex flex-col gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => router.push("/admin")}
+                  className="w-full bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs uppercase tracking-wider py-3.5 rounded-xl cursor-pointer transition-colors"
+                >
+                  Abrir Painel ADM (Scanner & Bilhetes)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleAdminLogout()}
+                  className="w-full bg-[#ffdad6] hover:bg-[#ffc8c2] text-[#93000a] font-extrabold text-xs uppercase tracking-wider py-3.5 rounded-xl cursor-pointer transition-colors"
+                >
+                  Sair da Conta (ADM)
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
+
+        {effectiveTab === "perfil" && !loggedEmail && !adminSessionEmail && (
+          <div className="w-full max-w-lg mx-auto py-4 sm:py-8">
+            <section className="bg-white rounded-[28px] shadow-[0_8px_32px_rgba(19,27,46,0.08)] p-6 sm:p-8 border border-[#eceaf6]">
+              <div className="text-center mb-6">
+                <div className="w-14 h-14 mx-auto rounded-2xl bg-[#e6f0f5] text-[#016294] flex items-center justify-center mb-3">
+                  <svg
+                    className="w-7 h-7"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <circle cx="12" cy="8" r="4" />
+                    <path d="M5 20a7 7 0 0 1 14 0" />
+                  </svg>
+                </div>
+                <h1 className="text-xl sm:text-2xl font-extrabold text-[#131b2e]">
+                  {authMode === "login"
+                    ? "Entrar no Pulse PE"
+                    : "Criar Conta no Pulse PE"}
+                </h1>
+                <p className="text-xs text-[#4e5462] mt-1">
+                  {authMode === "login"
+                    ? "Acesse seu perfil de torcedor ou entre com sua conta de Administrador (ADM)."
+                    : "Cadastre seus dados reais para gerenciar ingressos e biometria facial."}
+                </p>
+              </div>
+
+              {/* Login / Cadastrar Switcher */}
+              <div className="grid grid-cols-2 gap-1.5 bg-[#f2f3ff] p-1.5 rounded-2xl mb-5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode("login");
+                    setAuthError(null);
+                  }}
+                  className={`py-2.5 rounded-xl text-xs font-extrabold cursor-pointer transition-all ${
+                    authMode === "login"
+                      ? "bg-white text-[#016294] shadow-2xs"
+                      : "text-[#4e5462]"
+                  }`}
+                >
+                  Login (Torcedor / ADM)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode("cadastro");
+                    setAuthError(null);
+                  }}
+                  className={`py-2.5 rounded-xl text-xs font-extrabold cursor-pointer transition-all ${
+                    authMode === "cadastro"
+                      ? "bg-white text-[#016294] shadow-2xs"
+                      : "text-[#4e5462]"
+                  }`}
+                >
+                  Cadastrar Conta
+                </button>
+              </div>
+
+              {authMode === "login" ? (
+                <form
+                  onSubmit={handlePerfilLogin}
+                  className="flex flex-col gap-3.5"
+                >
+                  <div>
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#4e5462] mb-1">
+                      E-mail
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      value={authEmail}
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                      placeholder="seu@email.com ou e-mail do ADM"
+                      className="w-full rounded-xl bg-[#f2f3ff] border border-transparent focus:border-[#016294] focus:bg-white px-4 py-3 text-sm text-[#131b2e] outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#4e5462] mb-1">
+                      Senha
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      placeholder="Digite sua senha"
+                      className="w-full rounded-xl bg-[#f2f3ff] border border-transparent focus:border-[#016294] focus:bg-white px-4 py-3 text-sm text-[#131b2e] outline-none"
+                    />
+                  </div>
+
+                  {authError && (
+                    <div className="rounded-xl bg-[#ffdad6] px-4 py-2.5 text-xs font-bold text-[#93000a]">
+                      {authError}
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="mt-1 w-full bg-[#016294] hover:bg-[#01537e] disabled:opacity-60 text-white font-extrabold text-xs sm:text-sm uppercase tracking-wider py-3.5 rounded-xl cursor-pointer transition-colors"
+                  >
+                    {authLoading ? "Entrando..." : "Entrar"}
+                  </button>
+                </form>
+              ) : (
+                <form
+                  onSubmit={handlePerfilRegister}
+                  autoComplete="off"
+                  className="flex flex-col gap-3"
+                >
+                  <div>
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#4e5462] mb-1">
+                      Nome Completo *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={authNome}
+                      onChange={(e) => setAuthNome(e.target.value)}
+                      placeholder="Digite seu nome completo"
+                      className="w-full rounded-xl bg-[#f2f3ff] border border-transparent focus:border-[#016294] focus:bg-white px-4 py-2.5 text-sm text-[#131b2e] outline-none"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#4e5462] mb-1">
+                        CPF *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={authCpf}
+                        onChange={(e) => setAuthCpf(formatCPF(e.target.value))}
+                        placeholder="000.000.000-00"
+                        className="w-full rounded-xl bg-[#f2f3ff] border border-transparent focus:border-[#016294] focus:bg-white px-4 py-2.5 text-sm text-[#131b2e] outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#4e5462] mb-1">
+                        Matrícula (Opcional)
+                      </label>
+                      <input
+                        type="text"
+                        value={authMatricula}
+                        onChange={(e) => setAuthMatricula(e.target.value)}
+                        placeholder="Nº de sócio"
+                        className="w-full rounded-xl bg-[#f2f3ff] border border-transparent focus:border-[#016294] focus:bg-white px-4 py-2.5 text-sm text-[#131b2e] outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#4e5462] mb-1">
+                      E-mail *
+                    </label>
+                    <input
+                      type="email"
+                      name="register_email"
+                      autoComplete="off"
+                      required
+                      value={authEmail}
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                      placeholder="seu@email.com"
+                      className="w-full rounded-xl bg-[#f2f3ff] border border-transparent focus:border-[#016294] focus:bg-white px-4 py-2.5 text-sm text-[#131b2e] outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#4e5462] mb-1">
+                      Criar Senha *
+                    </label>
+                    <input
+                      type="password"
+                      name="register_password"
+                      autoComplete="new-password"
+                      required
+                      minLength={4}
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      placeholder="Mínimo 4 caracteres"
+                      className="w-full rounded-xl bg-[#f2f3ff] border border-transparent focus:border-[#016294] focus:bg-white px-4 py-2.5 text-sm text-[#131b2e] outline-none"
+                    />
+                  </div>
+
+                  {authError && (
+                    <div className="rounded-xl bg-[#ffdad6] px-4 py-2.5 text-xs font-bold text-[#93000a]">
+                      {authError}
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="mt-1 w-full bg-[#006c4a] hover:bg-[#00583c] disabled:opacity-60 text-white font-extrabold text-xs sm:text-sm uppercase tracking-wider py-3.5 rounded-xl cursor-pointer transition-colors"
+                  >
+                    Continuar para Reconhecimento Facial →
+                  </button>
+                  <p className="text-[11px] text-center text-[#4e5462]">
+                    O cadastro só é concluído após a validação facial pela
+                    câmera.
+                  </p>
+                </form>
+              )}
+            </section>
+          </div>
+        )}
+
+        {effectiveTab === "perfil" && loggedEmail && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 xl:gap-8 items-start">
             {/* Left Column: Member Identity & Carteira do Torcedor */}
             <div className="lg:col-span-5 xl:col-span-4 flex flex-col">
@@ -2870,47 +3842,31 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                 </div>
               </div>
 
-              {/* Support & Logout / Clear Data Buttons */}
+              {/* Support & Logout Buttons (No direct Admin link without login) */}
               <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
                 <button
                   type="button"
                   onClick={() => setActiveModal("perfil")}
                   className="w-full bg-white hover:bg-[#f2f3ff] text-[#131b2e] rounded-2xl py-3.5 px-4 shadow-[0_2px_12px_rgba(19,27,46,0.04)] font-extrabold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
                 >
-                  <svg
-                    className="w-4 h-4 text-[#016294]"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
-                    <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" />
-                  </svg>
-                  <span>Central de Ajuda & Suporte ao Sócio</span>
+                  <span>Central de Ajuda & Suporte</span>
                 </button>
 
                 <button
                   type="button"
-                  onClick={async () => {
-                    await removeBiometricProfile();
+                  onClick={() => {
+                    logoutUserSession();
+                    setLoggedEmail(null);
                     setProfile(null);
-                    setNome("");
-                    setCpf("");
-                    setMatricula("");
-                    setPlano("");
-                    setCategoria("");
-                    setMembroDesde("");
-                    setEmail("");
-                    setTelefone("");
-                    setDocumentoIdentificacao("");
-                    setOrgaoEmissor("");
-                    setAcessibilidade("");
-                    setStatusToast(
-                      "Dados do titular removidos do dispositivo.",
-                    );
+                    setTickets([]);
+                    setNotifications([]);
+                    setTicketStatuses({});
+                    setActiveTicketIndex(0);
+                    setFaceChecks(null);
+                    setFaceRejectionReasons([]);
+                    setPendingRegistration(null);
+                    setAuthMode("login");
+                    setStatusToast("Você saiu da sua conta.");
                   }}
                   className="w-full bg-[#ffdad6] hover:bg-[#ffc8c2] text-[#93000a] rounded-2xl py-3.5 px-4 font-extrabold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
                 >
@@ -2927,7 +3883,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     <polyline points="16 17 21 12 16 7" />
                     <line x1="21" y1="12" x2="9" y2="12" />
                   </svg>
-                  <span>Sair da Conta / Limpar Cadastro</span>
+                  <span>Sair da Conta</span>
                 </button>
               </div>
 
@@ -3412,11 +4368,24 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       {activeModal === "codigo-arena" && ticketForCodeModal && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl my-auto flex flex-col items-center text-center">
+            {/* Top Status Badge inside Modal */}
             <div className="w-full flex items-center justify-between mb-3">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-[#89f5c8] px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider text-[#005236]">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#005236]" />
-                ACESSO LIBERADO • ARENA
-              </span>
+              {ticketStatuses[ticketForCodeModal.codigoIngresso]?.status ===
+              "reprovado" ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-[#ffdad6] px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider text-[#93000a]">
+                  ✕ ACESSO BLOQUEADO • REPROVADO
+                </span>
+              ) : ticketStatuses[ticketForCodeModal.codigoIngresso]?.status ===
+                "aprovado" ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-[#006c4a] px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider text-white">
+                  ✓ COMPROVANTE • ENTRADA LIBERADA
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-[#89f5c8] px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider text-[#005236]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#005236]" />
+                  AGUARDANDO VALIDAÇÃO NA ARENA
+                </span>
+              )}
               <button
                 type="button"
                 onClick={() => setActiveModal(null)}
@@ -3433,29 +4402,62 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
               {ticketForCodeModal.estadio} • {ticketForCodeModal.dataHorario}
             </p>
 
-            {/* Real Scannable ISO/IEC 18004 QR Code & Linear Barcode */}
-            <div className="my-5 w-full bg-[#f2f3ff] rounded-2xl p-5 flex flex-col items-center">
-              <TicketCodeVisual
-                code={ticketForCodeModal.codigoIngresso}
-                validationUrl={buildValidationUrl(ticketForCodeModal)}
-                size={196}
-              />
-              <p className="text-[10.5px] text-[#4e5462] mt-2.5">
-                Aponte a câmera do celular ou clique abaixo para confirmar a
-                entrada na arena.
-              </p>
-            </div>
+            {/* Conditional Center Area: Blocked if Rejected, Official Receipt if Approved, QR Code if Pending */}
+            {ticketStatuses[ticketForCodeModal.codigoIngresso]?.status ===
+            "reprovado" ? (
+              <div className="my-5 w-full bg-[#ffdad6] border-2 border-[#93000a]/30 rounded-2xl p-6 flex flex-col items-center">
+                <div className="w-14 h-14 rounded-full bg-[#93000a] text-white flex items-center justify-center mb-3 text-xl font-extrabold">
+                  ✕
+                </div>
+                <p className="text-sm font-extrabold text-[#93000a] uppercase">
+                  Entrada Não Autorizada
+                </p>
+                <p className="text-xs font-bold text-[#7a0008] mt-1.5">
+                  Motivo:{" "}
+                  {ticketStatuses[ticketForCodeModal.codigoIngresso]
+                    .motivoReprovacao ||
+                    "Ingresso reprovado pela administração."}
+                </p>
+                <p className="text-[11px] text-[#7a0008] mt-2">
+                  O QR Code foi bloqueado na catraca. Não é possível acessar a
+                  arena com este bilhete.
+                </p>
+              </div>
+            ) : (
+              <div className="my-5 w-full bg-[#f2f3ff] rounded-2xl p-5 flex flex-col items-center">
+                {ticketStatuses[ticketForCodeModal.codigoIngresso]?.status ===
+                  "aprovado" && (
+                  <div className="w-full mb-3 rounded-xl bg-[#d4f4e4] border border-[#006c4a]/25 p-3 text-xs font-extrabold text-[#005236]">
+                    ✓ Comprovante Oficial — Você está autorizado a entrar na
+                    arena!
+                    {ticketStatuses[ticketForCodeModal.codigoIngresso]
+                      .reviewedAt && (
+                      <span className="block text-[10.5px] font-semibold text-[#006c4a] mt-0.5">
+                        Aprovado em{" "}
+                        {new Date(
+                          ticketStatuses[ticketForCodeModal.codigoIngresso]
+                            .reviewedAt!,
+                        ).toLocaleString("pt-BR")}
+                        {ticketStatuses[ticketForCodeModal.codigoIngresso]
+                          .reviewedBy
+                          ? ` por ${ticketStatuses[ticketForCodeModal.codigoIngresso].reviewedBy}`
+                          : ""}
+                      </span>
+                    )}
+                  </div>
+                )}
 
-            {enteredCodes[ticketForCodeModal.codigoIngresso] && (
-              <div className="w-full mb-4 rounded-xl bg-[#d4f4e4] border border-[#006c4a]/25 p-3 text-xs font-extrabold text-[#005236]">
-                ✓ Torcedor entrou no jogo às{" "}
-                {new Date(
-                  enteredCodes[ticketForCodeModal.codigoIngresso],
-                ).toLocaleTimeString("pt-BR", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  second: "2-digit",
-                })}
+                <TicketCodeVisual
+                  code={ticketForCodeModal.codigoIngresso}
+                  validationUrl={buildValidationUrl(ticketForCodeModal)}
+                  size={196}
+                />
+                <p className="text-[10.5px] text-[#4e5462] mt-2.5">
+                  {ticketStatuses[ticketForCodeModal.codigoIngresso]?.status ===
+                  "aprovado"
+                    ? "Comprovante de acesso validado. Apresente na catraca se solicitado."
+                    : "Apresente este QR Code ao administrador na entrada da arena para validação e liberação da catraca."}
+                </p>
               </div>
             )}
 
@@ -3507,40 +4509,29 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
               </span>
             </div>
 
-            <div className="w-full flex flex-col gap-2.5">
-              <a
-                href={buildValidationUrl(ticketForCodeModal)}
-                className="w-full bg-[#006c4a] hover:bg-[#00583c] text-white font-extrabold text-xs uppercase tracking-wider py-3.5 px-4 rounded-xl text-center transition-colors"
+            <div className="w-full flex gap-2.5">
+              <button
+                type="button"
+                onClick={() =>
+                  handleCopyTicketCode(ticketForCodeModal.codigoIngresso)
+                }
+                className={`flex-1 font-extrabold text-xs py-3 rounded-xl cursor-pointer transition-colors ${
+                  copiedCode === ticketForCodeModal.codigoIngresso
+                    ? "bg-[#006c4a] text-white"
+                    : "bg-[#e6f0f5] hover:bg-[#d5e7f0] text-[#016294]"
+                }`}
               >
-                {enteredCodes[ticketForCodeModal.codigoIngresso]
-                  ? "Ver Comprovante de Entrada na Arena"
-                  : "Confirmar Entrada na Arena (Validar QR)"}
-              </a>
-
-              <div className="w-full flex gap-2.5">
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleCopyTicketCode(ticketForCodeModal.codigoIngresso)
-                  }
-                  className={`flex-1 font-extrabold text-xs py-3 rounded-xl cursor-pointer transition-colors ${
-                    copiedCode === ticketForCodeModal.codigoIngresso
-                      ? "bg-[#006c4a] text-white"
-                      : "bg-[#e6f0f5] hover:bg-[#d5e7f0] text-[#016294]"
-                  }`}
-                >
-                  {copiedCode === ticketForCodeModal.codigoIngresso
-                    ? `Copiado (${ticketForCodeModal.codigoIngresso}) ✓`
-                    : "Copiar Código"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveModal(null)}
-                  className="flex-1 bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs py-3 rounded-xl cursor-pointer transition-colors"
-                >
-                  Concluir
-                </button>
-              </div>
+                {copiedCode === ticketForCodeModal.codigoIngresso
+                  ? `Copiado (${ticketForCodeModal.codigoIngresso}) ✓`
+                  : "Copiar Código"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveModal(null)}
+                className="flex-1 bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs py-3 rounded-xl cursor-pointer transition-colors"
+              >
+                Concluir
+              </button>
             </div>
           </div>
         </div>
@@ -3682,116 +4673,144 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         </div>
       )}
 
-      {/* Mobile Bottom Navigation Bar */}
-      <nav
-        aria-label="Navegação principal mobile"
-        className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-[#faf8ff]/95 backdrop-blur-xs border-t border-[#ebe9f5] px-4 py-2.5 grid grid-cols-4 items-center"
-      >
-        <button
-          type="button"
-          onClick={() => handleSwitchTab("ingressos")}
-          className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
-            activeTab === "ingressos"
-              ? "text-[#016294] font-extrabold"
-              : "text-[#4e5462] font-semibold"
+      {/* Mobile Bottom Navigation Bar (hidden during mandatory onboarding gate) */}
+      {!requiresOnboardingGate && (
+        <nav
+          aria-label="Navegação principal mobile"
+          className={`md:hidden fixed bottom-0 inset-x-0 z-30 bg-[#faf8ff]/95 backdrop-blur-xs border-t border-[#ebe9f5] px-2 py-2.5 grid items-center ${
+            adminSessionEmail ? "grid-cols-5" : "grid-cols-4"
           }`}
         >
-          <svg
-            className="w-5 h-5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={activeTab === "ingressos" ? "2.2" : "1.9"}
-            strokeLinecap="round"
-            strokeLinejoin="round"
+          <button
+            type="button"
+            onClick={() => handleSwitchTab("ingressos")}
+            className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
+              activeTab === "ingressos"
+                ? "text-[#016294] font-extrabold"
+                : "text-[#4e5462] font-semibold"
+            }`}
           >
-            <path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z" />
-            <path d="M13 5v2" />
-            <path d="M13 17v2" />
-            <path d="M13 11v2" />
-          </svg>
-          <span className="text-[10.5px] tracking-tight">Ingressos</span>
-        </button>
+            <svg
+              className="w-5 h-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={activeTab === "ingressos" ? "2.2" : "1.9"}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z" />
+              <path d="M13 5v2" />
+              <path d="M13 17v2" />
+              <path d="M13 11v2" />
+            </svg>
+            <span className="text-[10.5px] tracking-tight">Ingressos</span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => handleSwitchTab("biometria")}
-          className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
-            activeTab === "biometria"
-              ? "text-[#016294] font-extrabold"
-              : "text-[#4e5462] font-semibold"
-          }`}
-        >
-          <svg
-            className="w-5 h-5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={activeTab === "biometria" ? "2.2" : "1.9"}
-            strokeLinecap="round"
-            strokeLinejoin="round"
+          <button
+            type="button"
+            onClick={() => handleSwitchTab("biometria")}
+            className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
+              activeTab === "biometria"
+                ? "text-[#016294] font-extrabold"
+                : "text-[#4e5462] font-semibold"
+            }`}
           >
-            <path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4" />
-            <path d="M14 13.12c0 2.38 0 6.38-1 8.88" />
-            <path d="M17.29 21.02c.12-.6.43-2.3.5-3.02" />
-            <path d="M2 12a10 10 0 0 1 18-6" />
-            <path d="M2 16h.01" />
-            <path d="M21.8 16c.2-2 .131-5.354 0-6" />
-            <path d="M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2" />
-            <path d="M8.65 22c.21-.66.45-1.32.57-2" />
-            <path d="M9 6.8a6 6 0 0 1 9 5.2v2" />
-          </svg>
-          <span className="text-[10.5px] tracking-tight">Biometria</span>
-        </button>
+            <svg
+              className="w-5 h-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={activeTab === "biometria" ? "2.2" : "1.9"}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4" />
+              <path d="M14 13.12c0 2.38 0 6.38-1 8.88" />
+              <path d="M17.29 21.02c.12-.6.43-2.3.5-3.02" />
+              <path d="M2 12a10 10 0 0 1 18-6" />
+              <path d="M2 16h.01" />
+              <path d="M21.8 16c.2-2 .131-5.354 0-6" />
+              <path d="M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2" />
+              <path d="M8.65 22c.21-.66.45-1.32.57-2" />
+              <path d="M9 6.8a6 6 0 0 1 9 5.2v2" />
+            </svg>
+            <span className="text-[10.5px] tracking-tight">Biometria</span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => handleSwitchTab("notificacoes")}
-          className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
-            activeTab === "notificacoes"
-              ? "text-[#016294] font-extrabold"
-              : "text-[#4e5462] font-semibold"
-          }`}
-        >
-          <svg
-            className="w-5 h-5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={activeTab === "notificacoes" ? "2.2" : "1.9"}
-            strokeLinecap="round"
-            strokeLinejoin="round"
+          <button
+            type="button"
+            onClick={() => handleSwitchTab("notificacoes")}
+            className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
+              activeTab === "notificacoes"
+                ? "text-[#016294] font-extrabold"
+                : "text-[#4e5462] font-semibold"
+            }`}
           >
-            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-            <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-          </svg>
-          <span className="text-[10.5px] tracking-tight">Notificações</span>
-        </button>
+            <svg
+              className="w-5 h-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={activeTab === "notificacoes" ? "2.2" : "1.9"}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+              <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+            </svg>
+            <span className="text-[10.5px] tracking-tight">Notificações</span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => handleSwitchTab("perfil")}
-          className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
-            activeTab === "perfil"
-              ? "text-[#016294] font-extrabold"
-              : "text-[#4e5462] font-semibold"
-          }`}
-        >
-          <svg
-            className="w-5 h-5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={activeTab === "perfil" ? "2.2" : "1.9"}
-            strokeLinecap="round"
-            strokeLinejoin="round"
+          <button
+            type="button"
+            onClick={() => handleSwitchTab("perfil")}
+            className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
+              activeTab === "perfil"
+                ? "text-[#016294] font-extrabold"
+                : "text-[#4e5462] font-semibold"
+            }`}
           >
-            <circle cx="12" cy="8" r="4" />
-            <path d="M5 20a7 7 0 0 1 14 0" />
-          </svg>
-          <span className="text-[10.5px] tracking-tight">Perfil</span>
-        </button>
-      </nav>
+            <svg
+              className="w-5 h-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={activeTab === "perfil" ? "2.2" : "1.9"}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="12" cy="8" r="4" />
+              <path d="M5 20a7 7 0 0 1 14 0" />
+            </svg>
+            <span className="text-[10.5px] tracking-tight">Perfil</span>
+          </button>
+
+          {adminSessionEmail && (
+            <button
+              type="button"
+              onClick={() => router.push("/admin")}
+              className="flex flex-col items-center justify-center gap-1 text-[#016294] font-extrabold cursor-pointer"
+            >
+              <svg
+                className="w-5 h-5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <rect x="3" y="3" width="7" height="7" />
+                <rect x="14" y="3" width="7" height="7" />
+                <rect x="14" y="14" width="7" height="7" />
+                <rect x="3" y="14" width="7" height="7" />
+              </svg>
+              <span className="text-[10px] tracking-tight">Painel ADM</span>
+            </button>
+          )}
+        </nav>
+      )}
     </div>
   );
 }
