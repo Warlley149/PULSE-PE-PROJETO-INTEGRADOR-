@@ -1,24 +1,49 @@
+export interface DependentMember {
+  id: string;
+  nome: string;
+  parentesco: string;
+  documento: string;
+}
+
 export interface BiometricProfile {
   id: string;
   nome: string;
   cpf: string;
+  documentoIdentificacao: string;
+  orgaoEmissor: string;
   matricula: string;
+  plano: string;
   categoria: string;
+  membroDesde: string;
   email: string;
   telefone: string;
   faceImageDataUrl: string;
   faceHashSha256: string;
+  faceQualityScore: number;
   imageWidth: number;
   imageHeight: number;
+  livenessVerified: boolean;
+  dependentes: DependentMember[];
+  acessibilidade: string;
+  alertasPortao: boolean;
+  catracaTempoReal: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface TicketAccess {
   id: string;
+  matchId: string;
+  codigoIngresso: string;
   competicao: string;
+  temporada: string;
   mandante: string;
+  mandanteSigla: string;
+  mandanteCor: string;
   visitante: string;
+  visitanteSigla: string;
+  visitanteCor: string;
+  estadio: string;
   dataHorario: string;
   aberturaPortoes: string;
   setor: string;
@@ -27,21 +52,27 @@ export interface TicketAccess {
   enderecoPortao: string;
   tipoAcesso: string;
   fila: string;
+  fonte: string;
   createdAt: string;
 }
 
+export type NotificationCategory = "acesso" | "partidas" | "clube";
+
 export interface SystemNotification {
   id: string;
+  categoria: NotificationCategory;
+  selo: string;
   titulo: string;
   mensagem: string;
+  detalheRodape?: string;
   createdAt: string;
   lida: boolean;
 }
 
 const STORAGE_KEYS = {
-  PROFILE: "pulse_pe_biometric_profile_v1",
-  TICKET: "pulse_pe_ticket_access_v1",
-  NOTIFICATIONS: "pulse_pe_notifications_v1",
+  PROFILE: "pulse_pe_real_profile_v2",
+  TICKETS: "pulse_pe_real_tickets_v2",
+  NOTIFICATIONS: "pulse_pe_real_notifications_v2",
 } as const;
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "/api/biometria";
@@ -90,7 +121,7 @@ export function isValidCPF(cpf: string): boolean {
 }
 
 export async function computeSha256Hex(input: string): Promise<string> {
-  if (typeof window !== "undefined" && window.crypto?.subtle) {
+  if (typeof window !== "undefined" && window.crypto?.subtle && input) {
     const encoder = new TextEncoder();
     const data = encoder.encode(input);
     const hashBuffer = await window.crypto.subtle.digest("SHA-256", data);
@@ -112,19 +143,61 @@ export function getStoredProfile(): BiometricProfile | null {
 }
 
 export async function saveBiometricProfile(
-  profileData: Omit<
-    BiometricProfile,
-    "id" | "faceHashSha256" | "createdAt" | "updatedAt"
-  >,
+  partial: Partial<BiometricProfile>,
 ): Promise<BiometricProfile> {
   const existing = getStoredProfile();
   const now = new Date().toISOString();
-  const faceHashSha256 = await computeSha256Hex(profileData.faceImageDataUrl);
+  const nextFaceUrl =
+    partial.faceImageDataUrl !== undefined
+      ? partial.faceImageDataUrl
+      : existing?.faceImageDataUrl || "";
+
+  const faceHashSha256 = nextFaceUrl
+    ? await computeSha256Hex(nextFaceUrl)
+    : existing?.faceHashSha256 || "";
 
   const record: BiometricProfile = {
-    ...profileData,
     id: existing?.id || crypto.randomUUID(),
+    nome: (partial.nome ?? existing?.nome ?? "").trim(),
+    cpf: (partial.cpf ?? existing?.cpf ?? "").trim(),
+    documentoIdentificacao: (
+      partial.documentoIdentificacao ??
+      existing?.documentoIdentificacao ??
+      ""
+    ).trim(),
+    orgaoEmissor: (partial.orgaoEmissor ?? existing?.orgaoEmissor ?? "").trim(),
+    matricula: (partial.matricula ?? existing?.matricula ?? "").trim(),
+    plano: (partial.plano ?? existing?.plano ?? "").trim(),
+    categoria: (partial.categoria ?? existing?.categoria ?? "").trim(),
+    membroDesde: (
+      partial.membroDesde ??
+      existing?.membroDesde ??
+      new Date().toLocaleDateString("pt-BR", {
+        month: "long",
+        year: "numeric",
+      })
+    ).trim(),
+    email: (partial.email ?? existing?.email ?? "").trim(),
+    telefone: (partial.telefone ?? existing?.telefone ?? "").trim(),
+    faceImageDataUrl: nextFaceUrl,
     faceHashSha256,
+    faceQualityScore:
+      partial.faceQualityScore ?? existing?.faceQualityScore ?? 0,
+    imageWidth: partial.imageWidth ?? existing?.imageWidth ?? 0,
+    imageHeight: partial.imageHeight ?? existing?.imageHeight ?? 0,
+    livenessVerified:
+      partial.livenessVerified ??
+      existing?.livenessVerified ??
+      Boolean(nextFaceUrl),
+    dependentes: partial.dependentes ?? existing?.dependentes ?? [],
+    acessibilidade: (
+      partial.acessibilidade ??
+      existing?.acessibilidade ??
+      ""
+    ).trim(),
+    alertasPortao: partial.alertasPortao ?? existing?.alertasPortao ?? true,
+    catracaTempoReal:
+      partial.catracaTempoReal ?? existing?.catracaTempoReal ?? true,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   };
@@ -133,11 +206,6 @@ export async function saveBiometricProfile(
     window.localStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify(record));
   }
 
-  addSystemNotification(
-    existing ? "Biometria facial atualizada" : "Biometria facial cadastrada",
-    `Cadastro facial de ${record.nome} registrado e pronto para sincronização.`,
-  );
-
   try {
     await fetch(API_BASE_URL, {
       method: "POST",
@@ -145,7 +213,7 @@ export async function saveBiometricProfile(
       body: JSON.stringify(record),
     });
   } catch {
-    // Offline or external backend not yet connected; data remains safely persisted locally
+    // Persisted locally until external backend is connected
   }
 
   return record;
@@ -158,42 +226,64 @@ export async function removeBiometricProfile(): Promise<void> {
   try {
     await fetch(API_BASE_URL, { method: "DELETE" });
   } catch {
-    // Ignore network error if external backend is offline
+    // Ignore if external backend is offline
   }
 }
 
-export function getStoredTicket(): TicketAccess | null {
-  if (typeof window === "undefined") return null;
+export function getStoredTickets(): TicketAccess[] {
+  if (typeof window === "undefined") return [];
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEYS.TICKET);
-    if (!raw) return null;
-    return JSON.parse(raw) as TicketAccess;
+    const raw = window.localStorage.getItem(STORAGE_KEYS.TICKETS);
+    if (!raw) return [];
+    return JSON.parse(raw) as TicketAccess[];
   } catch {
-    return null;
+    return [];
   }
+}
+
+export function getActiveTicket(): TicketAccess | null {
+  const list = getStoredTickets();
+  return list.length > 0 ? list[0] : null;
 }
 
 export function saveTicketAccess(
   ticket: Omit<TicketAccess, "id" | "createdAt">,
+  existingId?: string,
 ): TicketAccess {
+  const list = getStoredTickets();
+  const now = new Date().toISOString();
+
   const record: TicketAccess = {
     ...ticket,
-    id: crypto.randomUUID(),
-    createdAt: new Date().toISOString(),
+    id: existingId || crypto.randomUUID(),
+    createdAt: now,
   };
+
+  const filtered = existingId
+    ? list.map((t) => (t.id === existingId ? record : t))
+    : [record, ...list];
+
   if (typeof window !== "undefined") {
-    window.localStorage.setItem(STORAGE_KEYS.TICKET, JSON.stringify(record));
+    window.localStorage.setItem(STORAGE_KEYS.TICKETS, JSON.stringify(filtered));
   }
-  addSystemNotification(
-    "Ingresso vinculado",
-    `${record.mandante} vs ${record.visitante} (${record.setor} • Portão ${record.portao}).`,
-  );
+
+  addSystemNotification({
+    categoria: "partidas",
+    selo: "INGRESSO CONFIRMADO",
+    titulo: `${record.mandante} x ${record.visitante}`,
+    mensagem: `Ingresso para o setor ${record.setor}${record.subsetor ? ` (${record.subsetor})` : ""} vinculado ao Portão ${record.portao}.`,
+    detalheRodape: record.enderecoPortao
+      ? `Acesso via ${record.enderecoPortao} • Portão ${record.portao}`
+      : `Portão ${record.portao}`,
+  });
+
   return record;
 }
 
-export function removeTicketAccess(): void {
+export function removeTicketAccess(id: string): void {
+  const list = getStoredTickets().filter((t) => t.id !== id);
   if (typeof window !== "undefined") {
-    window.localStorage.removeItem(STORAGE_KEYS.TICKET);
+    window.localStorage.setItem(STORAGE_KEYS.TICKETS, JSON.stringify(list));
   }
 }
 
@@ -208,19 +298,25 @@ export function getStoredNotifications(): SystemNotification[] {
   }
 }
 
-export function addSystemNotification(
-  titulo: string,
-  mensagem: string,
-): SystemNotification {
+export function addSystemNotification(input: {
+  categoria: NotificationCategory;
+  selo: string;
+  titulo: string;
+  mensagem: string;
+  detalheRodape?: string;
+}): SystemNotification {
   const list = getStoredNotifications();
   const item: SystemNotification = {
     id: crypto.randomUUID(),
-    titulo,
-    mensagem,
+    categoria: input.categoria,
+    selo: input.selo,
+    titulo: input.titulo,
+    mensagem: input.mensagem,
+    detalheRodape: input.detalheRodape,
     createdAt: new Date().toISOString(),
     lida: false,
   };
-  const updated = [item, ...list].slice(0, 50);
+  const updated = [item, ...list].slice(0, 100);
   if (typeof window !== "undefined") {
     window.localStorage.setItem(
       STORAGE_KEYS.NOTIFICATIONS,
