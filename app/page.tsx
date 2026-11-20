@@ -53,6 +53,16 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
   const [activeTab, setActiveTab] = useState<AppTab>(initialTab);
   const [profile, setProfile] = useState<BiometricProfile | null>(null);
   const [loggedEmail, setLoggedEmail] = useState<string | null>(null);
+  const [adminSessionEmail, setAdminSessionEmail] = useState<string | null>(
+    null,
+  );
+  const [pendingRegistration, setPendingRegistration] = useState<{
+    nome: string;
+    email: string;
+    cpf: string;
+    password: string;
+    matricula: string;
+  } | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "cadastro">("login");
   const [authEmail, setAuthEmail] = useState<string>("");
   const [authPassword, setAuthPassword] = useState<string>("");
@@ -172,6 +182,19 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       setNotifications(savedNotifs);
       populateFormFromProfile(savedProfile);
 
+      if (typeof window !== "undefined") {
+        const params = new URLSearchParams(window.location.search);
+        const tabParam = params.get("tab");
+        if (
+          tabParam === "notificacoes" ||
+          tabParam === "perfil" ||
+          tabParam === "biometria" ||
+          tabParam === "ingressos"
+        ) {
+          setActiveTab(tabParam);
+        }
+      }
+
       // Ensure existing local tickets are registered on the server for the Admin list
       for (const t of savedTickets) {
         void fetch("/api/ingressos", {
@@ -252,9 +275,29 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       }
     };
 
+    const loadAdminSession = async () => {
+      try {
+        const res = await fetch("/api/admin/login", { cache: "no-store" });
+        if (res.ok) {
+          const data = (await res.json()) as {
+            authenticated?: boolean;
+            email?: string;
+          };
+          if (data.authenticated && data.email) {
+            setAdminSessionEmail(data.email);
+            return;
+          }
+        }
+        setAdminSessionEmail(null);
+      } catch {
+        // ignore
+      }
+    };
+
     const timer = window.setTimeout(() => {
       syncState();
       void loadTicketStatuses();
+      void loadAdminSession();
     }, 0);
     void loadOfficialMatches();
     const poll = window.setInterval(() => {
@@ -423,6 +466,56 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       return;
     }
 
+    // If user is completing Step 2 of mandatory facial registration:
+    if (pendingRegistration) {
+      const regRes = await registerUserAccount({
+        nome: pendingRegistration.nome,
+        email: pendingRegistration.email,
+        cpf: pendingRegistration.cpf,
+        password: pendingRegistration.password,
+        matricula: pendingRegistration.matricula,
+      });
+
+      if (!regRes.ok) {
+        setStatusToast(regRes.error);
+        setPendingRegistration(null);
+        setActiveTab("perfil");
+        return;
+      }
+
+      const saved = await saveBiometricProfile({
+        nome: pendingRegistration.nome,
+        email: pendingRegistration.email,
+        cpf: pendingRegistration.cpf,
+        matricula: pendingRegistration.matricula,
+        faceImageDataUrl: dataUrl,
+        faceQualityScore: measuredQuality,
+        imageWidth: width,
+        imageHeight: height,
+        livenessVerified: true,
+      });
+
+      addSystemNotification({
+        categoria: "acesso",
+        selo: "CADASTRO CONCLUÍDO",
+        titulo: `Conta e Biometria de ${saved.nome} ativadas`,
+        mensagem: `Cadastro finalizado com reconhecimento facial (${width}×${height}px • ${measuredQuality}% de qualidade) e criptografia SHA-256.`,
+        detalheRodape: "Acesso biométrico liberado na catraca",
+      });
+
+      setProfile(saved);
+      populateFormFromProfile(saved);
+      setLoggedEmail(regRes.account.email);
+      setPendingRegistration(null);
+      setAuthPassword("");
+      setNotifications(getStoredNotifications());
+      setStatusToast(
+        `Cadastro e reconhecimento facial concluídos para ${saved.nome}!`,
+      );
+      setActiveTab("perfil");
+      return;
+    }
+
     const saved = await saveBiometricProfile({
       faceImageDataUrl: dataUrl,
       faceQualityScore: measuredQuality,
@@ -442,10 +535,6 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     setProfile(saved);
     setNotifications(getStoredNotifications());
     setStatusToast("Foto facial capturada pela câmera e salva com sucesso.");
-
-    if (!saved.nome) {
-      setActiveModal("perfil");
-    }
   };
 
   const handleSavePersonalData = async (e: React.FormEvent) => {
@@ -639,7 +728,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     }
   };
 
-  const handlePerfilRegister = async (e: React.FormEvent) => {
+  const handlePerfilRegister = (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
 
@@ -653,30 +742,34 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       return;
     }
 
-    setAuthLoading(true);
-    try {
-      const res = await registerUserAccount({
-        nome: authNome,
-        email: authEmail,
-        cpf: authCpf,
-        password: authPassword,
-        matricula: authMatricula,
-      });
-
-      if (!res.ok) {
-        setAuthError(res.error);
-        return;
-      }
-
-      const updatedProfile = getStoredProfile();
-      setProfile(updatedProfile);
-      populateFormFromProfile(updatedProfile);
-      setLoggedEmail(res.account.email);
-      setAuthPassword("");
-      setStatusToast(`Conta criada com sucesso para ${res.account.nome}!`);
-    } finally {
-      setAuthLoading(false);
+    if (!authEmail.trim() || !authPassword || authPassword.length < 4) {
+      setAuthError(
+        "Informe um e-mail válido e uma senha com pelo menos 4 caracteres.",
+      );
+      return;
     }
+
+    // Registration only finishes after mandatory facial recognition capture
+    setPendingRegistration({
+      nome: authNome.trim(),
+      email: authEmail.trim().toLowerCase(),
+      cpf: formatCPF(authCpf),
+      password: authPassword,
+      matricula: authMatricula.trim(),
+    });
+    setActiveTab("biometria");
+    setStatusToast(
+      "Etapa final do cadastro: capture sua face na câmera para concluir sua conta.",
+    );
+    window.setTimeout(() => {
+      void startCamera("capture", "user");
+    }, 150);
+  };
+
+  const handleAdminLogout = async () => {
+    await fetch("/api/admin/login", { method: "DELETE" });
+    setAdminSessionEmail(null);
+    setStatusToast("Sessão do Administrador encerrada.");
   };
 
   const handleCopyTicketCode = async (code: string) => {
@@ -845,6 +938,15 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                 <span>{item.label}</span>
               </button>
             ))}
+            {adminSessionEmail && (
+              <button
+                type="button"
+                onClick={() => router.push("/admin")}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-extrabold bg-[#016294] text-white hover:bg-[#01537e] cursor-pointer transition-all"
+              >
+                <span>Painel ADM</span>
+              </button>
+            )}
           </nav>
 
           {/* Right: Bell & User Avatar (Displays real captured photo or neutral user icon) */}
@@ -1649,6 +1751,35 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
            ========================================================= */}
         {activeTab === "biometria" && (
           <div className="flex flex-col">
+            {pendingRegistration && (
+              <div className="mb-5 rounded-2xl bg-[#016294] text-white p-4 sm:p-5 shadow-md flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <span className="text-[10px] font-extrabold uppercase tracking-widest bg-white/20 px-2.5 py-0.5 rounded-full">
+                    ETAPA 2 DE 2 • OBRIGATÓRIA
+                  </span>
+                  <h2 className="text-sm sm:text-base font-extrabold mt-1.5">
+                    Finalize o cadastro de {pendingRegistration.nome} com sua
+                    Biometria Facial
+                  </h2>
+                  <p className="text-xs text-white/85 mt-0.5">
+                    Sua conta só será concluída após capturar seu rosto pela
+                    câmera abaixo.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    stopCamera();
+                    setPendingRegistration(null);
+                    setActiveTab("perfil");
+                  }}
+                  className="self-start sm:self-auto bg-white/15 hover:bg-white/25 text-white text-xs font-bold px-3.5 py-2 rounded-xl cursor-pointer shrink-0"
+                >
+                  Cancelar Cadastro
+                </button>
+              </div>
+            )}
+
             <div className="inline-flex items-center gap-1.5 self-start rounded-full bg-[#e6f0f5] px-3 py-1 text-[10px] sm:text-[11px] font-extrabold uppercase tracking-[0.04em] text-[#016294]">
               <svg
                 className="w-3.5 h-3.5 text-[#016294] shrink-0"
@@ -2485,9 +2616,43 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         )}
 
         {/* =========================================================
-            SCREEN 4: PERFIL (Login / Cadastro Gate + Full Profile)
+            SCREEN 4: PERFIL (Admin Active Session / Login-Cadastro / User Profile)
            ========================================================= */}
-        {activeTab === "perfil" && !loggedEmail && (
+        {activeTab === "perfil" && adminSessionEmail && !loggedEmail && (
+          <div className="w-full max-w-lg mx-auto py-4 sm:py-8">
+            <section className="bg-white rounded-[28px] shadow-[0_8px_32px_rgba(19,27,46,0.08)] p-6 sm:p-8 border border-[#eceaf6] text-center">
+              <div className="w-14 h-14 mx-auto rounded-2xl bg-[#016294] text-white flex items-center justify-center font-extrabold text-sm mb-3">
+                ADM
+              </div>
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-[#89f5c8] px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider text-[#005236]">
+                SESSÃO ADMINISTRATIVA ATIVA
+              </span>
+              <h1 className="text-xl font-extrabold text-[#131b2e] mt-3">
+                Administrador Autenticado
+              </h1>
+              <p className="text-xs text-[#4e5462] mt-1">{adminSessionEmail}</p>
+
+              <div className="mt-6 flex flex-col gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => router.push("/admin")}
+                  className="w-full bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs uppercase tracking-wider py-3.5 rounded-xl cursor-pointer transition-colors"
+                >
+                  Abrir Painel ADM (Scanner & Bilhetes)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleAdminLogout()}
+                  className="w-full bg-[#ffdad6] hover:bg-[#ffc8c2] text-[#93000a] font-extrabold text-xs uppercase tracking-wider py-3.5 rounded-xl cursor-pointer transition-colors"
+                >
+                  Sair da Conta (ADM)
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
+
+        {activeTab === "perfil" && !loggedEmail && !adminSessionEmail && (
           <div className="w-full max-w-lg mx-auto py-4 sm:py-8">
             <section className="bg-white rounded-[28px] shadow-[0_8px_32px_rgba(19,27,46,0.08)] p-6 sm:p-8 border border-[#eceaf6]">
               <div className="text-center mb-6">
@@ -2595,19 +2760,11 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                   >
                     {authLoading ? "Entrando..." : "Entrar"}
                   </button>
-
-                  <div className="pt-3 border-t border-[#eceaf6] text-center">
-                    <a
-                      href="/admin"
-                      className="inline-flex items-center justify-center gap-1.5 text-xs font-extrabold text-[#016294] hover:underline"
-                    >
-                      Acessar Portal Exclusivo do Administrador (ADM) →
-                    </a>
-                  </div>
                 </form>
               ) : (
                 <form
                   onSubmit={handlePerfilRegister}
+                  autoComplete="off"
                   className="flex flex-col gap-3"
                 >
                   <div>
@@ -2658,6 +2815,8 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     </label>
                     <input
                       type="email"
+                      name="register_email"
+                      autoComplete="off"
                       required
                       value={authEmail}
                       onChange={(e) => setAuthEmail(e.target.value)}
@@ -2672,6 +2831,8 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     </label>
                     <input
                       type="password"
+                      name="register_password"
+                      autoComplete="new-password"
                       required
                       minLength={4}
                       value={authPassword}
@@ -2692,8 +2853,12 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     disabled={authLoading}
                     className="mt-1 w-full bg-[#006c4a] hover:bg-[#00583c] disabled:opacity-60 text-white font-extrabold text-xs sm:text-sm uppercase tracking-wider py-3.5 rounded-xl cursor-pointer transition-colors"
                   >
-                    {authLoading ? "Cadastrando..." : "Criar Conta e Entrar"}
+                    Continuar para Reconhecimento Facial →
                   </button>
+                  <p className="text-[11px] text-center text-[#4e5462]">
+                    O cadastro só é concluído após a validação facial pela
+                    câmera.
+                  </p>
                 </form>
               )}
             </section>
@@ -3227,22 +3392,14 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                 </div>
               </div>
 
-              {/* Support, Admin Portal & Logout Buttons */}
-              <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
+              {/* Support & Logout Buttons (No direct Admin link without login) */}
+              <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
                 <button
                   type="button"
                   onClick={() => setActiveModal("perfil")}
                   className="w-full bg-white hover:bg-[#f2f3ff] text-[#131b2e] rounded-2xl py-3.5 px-4 shadow-[0_2px_12px_rgba(19,27,46,0.04)] font-extrabold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
                 >
                   <span>Central de Ajuda & Suporte</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => router.push("/admin")}
-                  className="w-full bg-[#e6f0f5] hover:bg-[#d5e7f0] text-[#016294] rounded-2xl py-3.5 px-4 font-extrabold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
-                >
-                  <span>Entrar como Administrador (ADM)</span>
                 </button>
 
                 <button
@@ -4029,7 +4186,9 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       {/* Mobile Bottom Navigation Bar */}
       <nav
         aria-label="Navegação principal mobile"
-        className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-[#faf8ff]/95 backdrop-blur-xs border-t border-[#ebe9f5] px-4 py-2.5 grid grid-cols-4 items-center"
+        className={`md:hidden fixed bottom-0 inset-x-0 z-30 bg-[#faf8ff]/95 backdrop-blur-xs border-t border-[#ebe9f5] px-2 py-2.5 grid items-center ${
+          adminSessionEmail ? "grid-cols-5" : "grid-cols-4"
+        }`}
       >
         <button
           type="button"
@@ -4135,6 +4294,30 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
           </svg>
           <span className="text-[10.5px] tracking-tight">Perfil</span>
         </button>
+
+        {adminSessionEmail && (
+          <button
+            type="button"
+            onClick={() => router.push("/admin")}
+            className="flex flex-col items-center justify-center gap-1 text-[#016294] font-extrabold cursor-pointer"
+          >
+            <svg
+              className="w-5 h-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <rect x="3" y="3" width="7" height="7" />
+              <rect x="14" y="3" width="7" height="7" />
+              <rect x="14" y="14" width="7" height="7" />
+              <rect x="3" y="14" width="7" height="7" />
+            </svg>
+            <span className="text-[10px] tracking-tight">Painel ADM</span>
+          </button>
+        )}
       </nav>
     </div>
   );
