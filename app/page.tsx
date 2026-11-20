@@ -114,6 +114,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
   const [ticketForCodeModal, setTicketForCodeModal] =
     useState<TicketAccess | null>(null);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [lanOrigin, setLanOrigin] = useState<string | null>(null);
   const [ticketStatuses, setTicketStatuses] = useState<
     Record<
       string,
@@ -298,10 +299,32 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       }
     };
 
+    const loadNetworkOrigin = async () => {
+      if (
+        typeof window === "undefined" ||
+        (window.location.hostname !== "localhost" &&
+          window.location.hostname !== "127.0.0.1")
+      ) {
+        return;
+      }
+      try {
+        const res = await fetch("/api/network");
+        if (res.ok) {
+          const data = (await res.json()) as { lanOrigin?: string | null };
+          if (data.lanOrigin) {
+            setLanOrigin(data.lanOrigin);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    };
+
     const timer = window.setTimeout(() => {
       syncState();
       void loadTicketStatuses();
       void loadAdminSession();
+      void loadNetworkOrigin();
     }, 0);
     void loadOfficialMatches();
     const poll = window.setInterval(() => {
@@ -687,8 +710,14 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
   };
 
   const buildValidationUrl = (ticket: TicketAccess) => {
-    const origin = typeof window !== "undefined" ? window.location.origin : "";
-    return `${origin}/validar?codigo=${encodeURIComponent(ticket.codigoIngresso)}`;
+    const browserOrigin =
+      typeof window !== "undefined" ? window.location.origin : "";
+    const isLocalhost =
+      typeof window !== "undefined" &&
+      (window.location.hostname === "localhost" ||
+        window.location.hostname === "127.0.0.1");
+    const baseOrigin = isLocalhost && lanOrigin ? lanOrigin : browserOrigin;
+    return `${baseOrigin}/validar?codigo=${encodeURIComponent(ticket.codigoIngresso)}`;
   };
 
   const handlePerfilLogin = async (e: React.FormEvent) => {

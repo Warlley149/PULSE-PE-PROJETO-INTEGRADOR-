@@ -47,11 +47,6 @@ export function AdminPortalClient({
   );
   const [rejectModalTicket, setRejectModalTicket] =
     useState<ServerTicketRecord | null>(null);
-  const [receiptTicket, setReceiptTicket] = useState<ServerTicketRecord | null>(
-    null,
-  );
-  const [rejectModalTicket, setRejectModalTicket] =
-    useState<ServerTicketRecord | null>(null);
   const [rejectionReason, setRejectionReason] = useState<string>("");
   const [lastUpdatedLabel, setLastUpdatedLabel] = useState<string>("");
   const [actionMessage, setActionMessage] = useState<{
