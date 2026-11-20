@@ -69,10 +69,21 @@ export interface SystemNotification {
   lida: boolean;
 }
 
+export interface UserAccount {
+  id: string;
+  nome: string;
+  email: string;
+  cpf: string;
+  passwordHash: string;
+  createdAt: string;
+}
+
 const STORAGE_KEYS = {
   PROFILE: "pulse_pe_real_profile_v2",
   TICKETS: "pulse_pe_real_tickets_v2",
   NOTIFICATIONS: "pulse_pe_real_notifications_v2",
+  ACCOUNTS: "pulse_pe_user_accounts_v1",
+  SESSION_EMAIL: "pulse_pe_user_session_email_v1",
 } as const;
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "/api/biometria";
@@ -341,4 +352,115 @@ export function clearNotifications(): void {
   if (typeof window !== "undefined") {
     window.localStorage.removeItem(STORAGE_KEYS.NOTIFICATIONS);
   }
+}
+
+export function getLoggedUserEmail(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(STORAGE_KEYS.SESSION_EMAIL);
+}
+
+export function logoutUserSession(): void {
+  if (typeof window !== "undefined") {
+    window.localStorage.removeItem(STORAGE_KEYS.SESSION_EMAIL);
+  }
+}
+
+export async function registerUserAccount(input: {
+  nome: string;
+  email: string;
+  cpf: string;
+  password: string;
+  matricula?: string;
+}): Promise<{ ok: true; account: UserAccount } | { ok: false; error: string }> {
+  const emailNorm = input.email.trim().toLowerCase();
+  if (!emailNorm || !input.password || input.password.length < 4) {
+    return {
+      ok: false,
+      error:
+        "Informe um e-mail válido e uma senha com pelo menos 4 caracteres.",
+    };
+  }
+
+  let accounts: UserAccount[] = [];
+  if (typeof window !== "undefined") {
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEYS.ACCOUNTS);
+      if (raw) accounts = JSON.parse(raw) as UserAccount[];
+    } catch {
+      accounts = [];
+    }
+  }
+
+  if (accounts.some((a) => a.email === emailNorm)) {
+    return { ok: false, error: "Este e-mail já está cadastrado. Faça login." };
+  }
+
+  const passwordHash = await computeSha256Hex(input.password);
+  const account: UserAccount = {
+    id: crypto.randomUUID(),
+    nome: input.nome.trim(),
+    email: emailNorm,
+    cpf: formatCPF(input.cpf),
+    passwordHash,
+    createdAt: new Date().toISOString(),
+  };
+
+  accounts.push(account);
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(
+      STORAGE_KEYS.ACCOUNTS,
+      JSON.stringify(accounts),
+    );
+    window.localStorage.setItem(STORAGE_KEYS.SESSION_EMAIL, account.email);
+  }
+
+  await saveBiometricProfile({
+    nome: account.nome,
+    email: account.email,
+    cpf: account.cpf,
+    matricula: (input.matricula || "").trim(),
+  });
+
+  return { ok: true, account };
+}
+
+export async function loginUserAccount(
+  email: string,
+  password: string,
+): Promise<{ ok: true; account: UserAccount } | { ok: false; error: string }> {
+  const emailNorm = email.trim().toLowerCase();
+  if (typeof window === "undefined") {
+    return { ok: false, error: "Ambiente indisponível." };
+  }
+
+  let accounts: UserAccount[] = [];
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEYS.ACCOUNTS);
+    if (raw) accounts = JSON.parse(raw) as UserAccount[];
+  } catch {
+    accounts = [];
+  }
+
+  const found = accounts.find((a) => a.email === emailNorm);
+  if (!found) {
+    return {
+      ok: false,
+      error:
+        "E-mail ou senha incorretos. Cadastre-se caso ainda não tenha conta.",
+    };
+  }
+
+  const hash = await computeSha256Hex(password);
+  if (hash !== found.passwordHash) {
+    return { ok: false, error: "E-mail ou senha incorretos." };
+  }
+
+  window.localStorage.setItem(STORAGE_KEYS.SESSION_EMAIL, found.email);
+  await saveBiometricProfile({
+    nome: found.nome,
+    email: found.email,
+    cpf: found.cpf,
+  });
+
+  return { ok: true, account: found };
 }

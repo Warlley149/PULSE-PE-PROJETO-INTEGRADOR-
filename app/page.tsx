@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   addSystemNotification,
   type BiometricProfile,
@@ -8,13 +9,16 @@ import {
   type DependentMember,
   formatCPF,
   formatPhone,
+  getLoggedUserEmail,
   getStoredNotifications,
   getStoredProfile,
   getStoredTickets,
   isValidCPF,
+  loginUserAccount,
+  logoutUserSession,
   markAllNotificationsRead,
   type NotificationCategory,
-  removeBiometricProfile,
+  registerUserAccount,
   removeTicketAccess,
   saveBiometricProfile,
   saveTicketAccess,
@@ -45,8 +49,18 @@ interface PulseAppProps {
 }
 
 export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<AppTab>(initialTab);
   const [profile, setProfile] = useState<BiometricProfile | null>(null);
+  const [loggedEmail, setLoggedEmail] = useState<string | null>(null);
+  const [authMode, setAuthMode] = useState<"login" | "cadastro">("login");
+  const [authEmail, setAuthEmail] = useState<string>("");
+  const [authPassword, setAuthPassword] = useState<string>("");
+  const [authNome, setAuthNome] = useState<string>("");
+  const [authCpf, setAuthCpf] = useState<string>("");
+  const [authMatricula, setAuthMatricula] = useState<string>("");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState<boolean>(false);
   const [tickets, setTickets] = useState<TicketAccess[]>([]);
   const [notifications, setNotifications] = useState<SystemNotification[]>([]);
   const [activeModal, setActiveModal] = useState<ModalType>(null);
@@ -90,7 +104,16 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
   const [ticketForCodeModal, setTicketForCodeModal] =
     useState<TicketAccess | null>(null);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
-  const [enteredCodes, setEnteredCodes] = useState<Record<string, string>>({});
+  const [ticketStatuses, setTicketStatuses] = useState<
+    Record<
+      string,
+      {
+        status: "pendente" | "aprovado" | "reprovado";
+        reviewedAt?: string;
+        motivoReprovacao?: string;
+      }
+    >
+  >({});
 
   // Custom Notification Form State
   const [notifCategoria, setNotifCategoria] =
@@ -144,37 +167,70 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       const savedNotifs = getStoredNotifications();
 
       setProfile(savedProfile);
+      setLoggedEmail(getLoggedUserEmail());
       setTickets(savedTickets);
       setNotifications(savedNotifs);
       populateFormFromProfile(savedProfile);
 
-      if (typeof window !== "undefined") {
-        const map: Record<string, string> = {};
-        for (const t of savedTickets) {
-          const enteredAt = window.localStorage.getItem(
-            `pulse_pe_entry_${t.codigoIngresso}`,
-          );
-          if (enteredAt) map[t.codigoIngresso] = enteredAt;
-        }
-        setEnteredCodes(map);
+      // Ensure existing local tickets are registered on the server for the Admin list
+      for (const t of savedTickets) {
+        void fetch("/api/ingressos", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            codigo: t.codigoIngresso,
+            matchId: t.matchId,
+            competicao: t.competicao,
+            jogo: `${t.mandante} x ${t.visitante}`,
+            estadio: t.estadio,
+            dataHorario: t.dataHorario,
+            setor: t.setor,
+            subsetor: t.subsetor,
+            portao: t.portao,
+            enderecoPortao: t.enderecoPortao,
+            titular: savedProfile?.nome || "Titular não informado",
+            cpf: savedProfile?.cpf || "",
+            biometriaOk: Boolean(savedProfile?.faceImageDataUrl),
+          }),
+        }).catch(() => {});
       }
     };
 
-    const loadValidatedEntries = async () => {
+    const loadTicketStatuses = async () => {
+      const savedTickets = getStoredTickets();
+      if (savedTickets.length === 0) return;
       try {
-        const res = await fetch("/api/ingressos/validar");
+        const codesParam = savedTickets.map((t) => t.codigoIngresso).join(",");
+        const res = await fetch(
+          `/api/ingressos?codigos=${encodeURIComponent(codesParam)}`,
+          { cache: "no-store" },
+        );
         if (res.ok) {
           const data = (await res.json()) as {
-            entries?: Array<{ codigo: string; enteredAt: string }>;
+            tickets?: Array<{
+              codigo: string;
+              status: "pendente" | "aprovado" | "reprovado";
+              reviewedAt?: string;
+              motivoReprovacao?: string;
+            }>;
           };
-          if (Array.isArray(data.entries)) {
-            setEnteredCodes((prev) => {
-              const next = { ...prev };
-              for (const entry of data.entries!) {
-                next[entry.codigo] = entry.enteredAt;
+          if (Array.isArray(data.tickets)) {
+            const next: Record<
+              string,
+              {
+                status: "pendente" | "aprovado" | "reprovado";
+                reviewedAt?: string;
+                motivoReprovacao?: string;
               }
-              return next;
-            });
+            > = {};
+            for (const item of data.tickets) {
+              next[item.codigo] = {
+                status: item.status,
+                reviewedAt: item.reviewedAt,
+                motivoReprovacao: item.motivoReprovacao,
+              };
+            }
+            setTicketStatuses(next);
           }
         }
       } catch {
@@ -196,15 +252,21 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       }
     };
 
-    const timer = window.setTimeout(syncState, 0);
+    const timer = window.setTimeout(() => {
+      syncState();
+      void loadTicketStatuses();
+    }, 0);
     void loadOfficialMatches();
-    void loadValidatedEntries();
+    const poll = window.setInterval(() => {
+      void loadTicketStatuses();
+    }, 5000);
     window.addEventListener("storage", syncState);
-    window.addEventListener("focus", loadValidatedEntries);
+    window.addEventListener("focus", loadTicketStatuses);
     return () => {
       window.clearTimeout(timer);
+      window.clearInterval(poll);
       window.removeEventListener("storage", syncState);
-      window.removeEventListener("focus", loadValidatedEntries);
+      window.removeEventListener("focus", loadTicketStatuses);
       stopCamera();
     };
   }, [populateFormFromProfile, stopCamera]);
@@ -475,7 +537,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
 
     const randomCode = `PE-${Math.floor(100000 + Math.random() * 900000)}`;
 
-    saveTicketAccess({
+    const created = saveTicketAccess({
       matchId: selectedMatchForTicket.id,
       codigoIngresso: randomCode,
       competicao: selectedMatchForTicket.competicao,
@@ -500,6 +562,27 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       fonte: selectedMatchForTicket.fonte,
     });
 
+    // Register on server so Admin immediately sees it in Lista de Bilhetes
+    void fetch("/api/ingressos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        codigo: created.codigoIngresso,
+        matchId: created.matchId,
+        competicao: created.competicao,
+        jogo: `${created.mandante} x ${created.visitante}`,
+        estadio: created.estadio,
+        dataHorario: created.dataHorario,
+        setor: created.setor,
+        subsetor: created.subsetor,
+        portao: created.portao,
+        enderecoPortao: created.enderecoPortao,
+        titular: profile?.nome || "Titular não informado",
+        cpf: profile?.cpf || "",
+        biometriaOk: hasFaceRegistered,
+      }),
+    }).catch(() => {});
+
     const updatedTickets = getStoredTickets();
     setTickets(updatedTickets);
     setActiveTicketIndex(0);
@@ -512,18 +595,88 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
 
   const buildValidationUrl = (ticket: TicketAccess) => {
     const origin = typeof window !== "undefined" ? window.location.origin : "";
-    const params = new URLSearchParams({
-      codigo: ticket.codigoIngresso,
-      jogo: `${ticket.mandante} x ${ticket.visitante}`,
-      estadio: ticket.estadio,
-      portao: ticket.portao,
-      setor: ticket.setor,
-      data: ticket.dataHorario,
-      titular: profile?.nome || "Titular não informado",
-      cpf: profile?.cpf || "",
-      bio: hasFaceRegistered ? "1" : "0",
-    });
-    return `${origin}/validar?${params.toString()}`;
+    return `${origin}/validar?codigo=${encodeURIComponent(ticket.codigoIngresso)}`;
+  };
+
+  const handlePerfilLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setAuthLoading(true);
+
+    try {
+      // First check if credentials belong to Admin (/api/admin/login)
+      const adminRes = await fetch("/api/admin/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: authEmail.trim(),
+          password: authPassword,
+        }),
+      });
+
+      if (adminRes.ok) {
+        router.push("/admin");
+        return;
+      }
+
+      // Otherwise authenticate as Torcedor account
+      const userRes = await loginUserAccount(authEmail, authPassword);
+      if (!userRes.ok) {
+        setAuthError(userRes.error);
+        return;
+      }
+
+      const updatedProfile = getStoredProfile();
+      setProfile(updatedProfile);
+      populateFormFromProfile(updatedProfile);
+      setLoggedEmail(userRes.account.email);
+      setAuthPassword("");
+      setStatusToast(`Bem-vindo(a), ${userRes.account.nome}!`);
+    } catch {
+      setAuthError("Não foi possível realizar o login.");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handlePerfilRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+
+    if (!authNome.trim() || authNome.trim().length < 3) {
+      setAuthError("Informe seu nome completo.");
+      return;
+    }
+
+    if (!isValidCPF(authCpf)) {
+      setAuthError("Informe um CPF válido (11 dígitos).");
+      return;
+    }
+
+    setAuthLoading(true);
+    try {
+      const res = await registerUserAccount({
+        nome: authNome,
+        email: authEmail,
+        cpf: authCpf,
+        password: authPassword,
+        matricula: authMatricula,
+      });
+
+      if (!res.ok) {
+        setAuthError(res.error);
+        return;
+      }
+
+      const updatedProfile = getStoredProfile();
+      setProfile(updatedProfile);
+      populateFormFromProfile(updatedProfile);
+      setLoggedEmail(res.account.email);
+      setAuthPassword("");
+      setStatusToast(`Conta criada com sucesso para ${res.account.nome}!`);
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
   const handleCopyTicketCode = async (code: string) => {
@@ -1280,14 +1433,22 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                         </div>
                         <span
                           className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full shrink-0 ${
-                            enteredCodes[t.codigoIngresso]
+                            ticketStatuses[t.codigoIngresso]?.status ===
+                            "aprovado"
                               ? "bg-[#006c4a] text-white"
-                              : "bg-[#89f5c8] text-[#005236]"
+                              : ticketStatuses[t.codigoIngresso]?.status ===
+                                  "reprovado"
+                                ? "bg-[#93000a] text-white"
+                                : "bg-[#89f5c8] text-[#005236]"
                           }`}
                         >
-                          {enteredCodes[t.codigoIngresso]
-                            ? "ENTROU NO JOGO ✓"
-                            : "VÁLIDO"}
+                          {ticketStatuses[t.codigoIngresso]?.status ===
+                          "aprovado"
+                            ? "ENTRADA APROVADA ✓"
+                            : ticketStatuses[t.codigoIngresso]?.status ===
+                                "reprovado"
+                              ? "ENTRADA REPROVADA ✕"
+                              : "AGUARDANDO ADM"}
                         </span>
                       </div>
 
@@ -2324,9 +2485,222 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         )}
 
         {/* =========================================================
-            SCREEN 4: PERFIL (Full-Screen Adaptive Layout, 100% Real Data)
+            SCREEN 4: PERFIL (Login / Cadastro Gate + Full Profile)
            ========================================================= */}
-        {activeTab === "perfil" && (
+        {activeTab === "perfil" && !loggedEmail && (
+          <div className="w-full max-w-lg mx-auto py-4 sm:py-8">
+            <section className="bg-white rounded-[28px] shadow-[0_8px_32px_rgba(19,27,46,0.08)] p-6 sm:p-8 border border-[#eceaf6]">
+              <div className="text-center mb-6">
+                <div className="w-14 h-14 mx-auto rounded-2xl bg-[#e6f0f5] text-[#016294] flex items-center justify-center mb-3">
+                  <svg
+                    className="w-7 h-7"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <circle cx="12" cy="8" r="4" />
+                    <path d="M5 20a7 7 0 0 1 14 0" />
+                  </svg>
+                </div>
+                <h1 className="text-xl sm:text-2xl font-extrabold text-[#131b2e]">
+                  {authMode === "login"
+                    ? "Entrar no Pulse PE"
+                    : "Criar Conta no Pulse PE"}
+                </h1>
+                <p className="text-xs text-[#4e5462] mt-1">
+                  {authMode === "login"
+                    ? "Acesse seu perfil de torcedor ou entre com sua conta de Administrador (ADM)."
+                    : "Cadastre seus dados reais para gerenciar ingressos e biometria facial."}
+                </p>
+              </div>
+
+              {/* Login / Cadastrar Switcher */}
+              <div className="grid grid-cols-2 gap-1.5 bg-[#f2f3ff] p-1.5 rounded-2xl mb-5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode("login");
+                    setAuthError(null);
+                  }}
+                  className={`py-2.5 rounded-xl text-xs font-extrabold cursor-pointer transition-all ${
+                    authMode === "login"
+                      ? "bg-white text-[#016294] shadow-2xs"
+                      : "text-[#4e5462]"
+                  }`}
+                >
+                  Login (Torcedor / ADM)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode("cadastro");
+                    setAuthError(null);
+                  }}
+                  className={`py-2.5 rounded-xl text-xs font-extrabold cursor-pointer transition-all ${
+                    authMode === "cadastro"
+                      ? "bg-white text-[#016294] shadow-2xs"
+                      : "text-[#4e5462]"
+                  }`}
+                >
+                  Cadastrar Conta
+                </button>
+              </div>
+
+              {authMode === "login" ? (
+                <form
+                  onSubmit={handlePerfilLogin}
+                  className="flex flex-col gap-3.5"
+                >
+                  <div>
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#4e5462] mb-1">
+                      E-mail
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      value={authEmail}
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                      placeholder="seu@email.com ou e-mail do ADM"
+                      className="w-full rounded-xl bg-[#f2f3ff] border border-transparent focus:border-[#016294] focus:bg-white px-4 py-3 text-sm text-[#131b2e] outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#4e5462] mb-1">
+                      Senha
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      placeholder="Digite sua senha"
+                      className="w-full rounded-xl bg-[#f2f3ff] border border-transparent focus:border-[#016294] focus:bg-white px-4 py-3 text-sm text-[#131b2e] outline-none"
+                    />
+                  </div>
+
+                  {authError && (
+                    <div className="rounded-xl bg-[#ffdad6] px-4 py-2.5 text-xs font-bold text-[#93000a]">
+                      {authError}
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="mt-1 w-full bg-[#016294] hover:bg-[#01537e] disabled:opacity-60 text-white font-extrabold text-xs sm:text-sm uppercase tracking-wider py-3.5 rounded-xl cursor-pointer transition-colors"
+                  >
+                    {authLoading ? "Entrando..." : "Entrar"}
+                  </button>
+
+                  <div className="pt-3 border-t border-[#eceaf6] text-center">
+                    <a
+                      href="/admin"
+                      className="inline-flex items-center justify-center gap-1.5 text-xs font-extrabold text-[#016294] hover:underline"
+                    >
+                      Acessar Portal Exclusivo do Administrador (ADM) →
+                    </a>
+                  </div>
+                </form>
+              ) : (
+                <form
+                  onSubmit={handlePerfilRegister}
+                  className="flex flex-col gap-3"
+                >
+                  <div>
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#4e5462] mb-1">
+                      Nome Completo *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={authNome}
+                      onChange={(e) => setAuthNome(e.target.value)}
+                      placeholder="Digite seu nome completo"
+                      className="w-full rounded-xl bg-[#f2f3ff] border border-transparent focus:border-[#016294] focus:bg-white px-4 py-2.5 text-sm text-[#131b2e] outline-none"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#4e5462] mb-1">
+                        CPF *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={authCpf}
+                        onChange={(e) => setAuthCpf(formatCPF(e.target.value))}
+                        placeholder="000.000.000-00"
+                        className="w-full rounded-xl bg-[#f2f3ff] border border-transparent focus:border-[#016294] focus:bg-white px-4 py-2.5 text-sm text-[#131b2e] outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#4e5462] mb-1">
+                        Matrícula (Opcional)
+                      </label>
+                      <input
+                        type="text"
+                        value={authMatricula}
+                        onChange={(e) => setAuthMatricula(e.target.value)}
+                        placeholder="Nº de sócio"
+                        className="w-full rounded-xl bg-[#f2f3ff] border border-transparent focus:border-[#016294] focus:bg-white px-4 py-2.5 text-sm text-[#131b2e] outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#4e5462] mb-1">
+                      E-mail *
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      value={authEmail}
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                      placeholder="seu@email.com"
+                      className="w-full rounded-xl bg-[#f2f3ff] border border-transparent focus:border-[#016294] focus:bg-white px-4 py-2.5 text-sm text-[#131b2e] outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-[#4e5462] mb-1">
+                      Criar Senha *
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      minLength={4}
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      placeholder="Mínimo 4 caracteres"
+                      className="w-full rounded-xl bg-[#f2f3ff] border border-transparent focus:border-[#016294] focus:bg-white px-4 py-2.5 text-sm text-[#131b2e] outline-none"
+                    />
+                  </div>
+
+                  {authError && (
+                    <div className="rounded-xl bg-[#ffdad6] px-4 py-2.5 text-xs font-bold text-[#93000a]">
+                      {authError}
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="mt-1 w-full bg-[#006c4a] hover:bg-[#00583c] disabled:opacity-60 text-white font-extrabold text-xs sm:text-sm uppercase tracking-wider py-3.5 rounded-xl cursor-pointer transition-colors"
+                  >
+                    {authLoading ? "Cadastrando..." : "Criar Conta e Entrar"}
+                  </button>
+                </form>
+              )}
+            </section>
+          </div>
+        )}
+
+        {activeTab === "perfil" && loggedEmail && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 xl:gap-8 items-start">
             {/* Left Column: Member Identity & Carteira do Torcedor */}
             <div className="lg:col-span-5 xl:col-span-4 flex flex-col">
@@ -2853,47 +3227,31 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                 </div>
               </div>
 
-              {/* Support & Logout / Clear Data Buttons */}
-              <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+              {/* Support, Admin Portal & Logout Buttons */}
+              <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
                 <button
                   type="button"
                   onClick={() => setActiveModal("perfil")}
                   className="w-full bg-white hover:bg-[#f2f3ff] text-[#131b2e] rounded-2xl py-3.5 px-4 shadow-[0_2px_12px_rgba(19,27,46,0.04)] font-extrabold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
                 >
-                  <svg
-                    className="w-4 h-4 text-[#016294]"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
-                    <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" />
-                  </svg>
-                  <span>Central de Ajuda & Suporte ao Sócio</span>
+                  <span>Central de Ajuda & Suporte</span>
                 </button>
 
                 <button
                   type="button"
-                  onClick={async () => {
-                    await removeBiometricProfile();
-                    setProfile(null);
-                    setNome("");
-                    setCpf("");
-                    setMatricula("");
-                    setPlano("");
-                    setCategoria("");
-                    setMembroDesde("");
-                    setEmail("");
-                    setTelefone("");
-                    setDocumentoIdentificacao("");
-                    setOrgaoEmissor("");
-                    setAcessibilidade("");
-                    setStatusToast(
-                      "Dados do titular removidos do dispositivo.",
-                    );
+                  onClick={() => router.push("/admin")}
+                  className="w-full bg-[#e6f0f5] hover:bg-[#d5e7f0] text-[#016294] rounded-2xl py-3.5 px-4 font-extrabold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                >
+                  <span>Entrar como Administrador (ADM)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    logoutUserSession();
+                    setLoggedEmail(null);
+                    setAuthMode("login");
+                    setStatusToast("Você saiu da sua conta.");
                   }}
                   className="w-full bg-[#ffdad6] hover:bg-[#ffc8c2] text-[#93000a] rounded-2xl py-3.5 px-4 font-extrabold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
                 >
@@ -2910,7 +3268,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     <polyline points="16 17 21 12 16 7" />
                     <line x1="21" y1="12" x2="9" y2="12" />
                   </svg>
-                  <span>Sair da Conta / Limpar Cadastro</span>
+                  <span>Sair da Conta</span>
                 </button>
               </div>
 
@@ -3424,21 +3782,35 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                 size={196}
               />
               <p className="text-[10.5px] text-[#4e5462] mt-2.5">
-                Aponte a câmera do celular ou clique abaixo para confirmar a
-                entrada na arena.
+                Apresente este QR Code ao administrador na entrada da arena para
+                validação e liberação da catraca.
               </p>
             </div>
 
-            {enteredCodes[ticketForCodeModal.codigoIngresso] && (
+            {ticketStatuses[ticketForCodeModal.codigoIngresso]?.status ===
+              "aprovado" && (
               <div className="w-full mb-4 rounded-xl bg-[#d4f4e4] border border-[#006c4a]/25 p-3 text-xs font-extrabold text-[#005236]">
-                ✓ Torcedor entrou no jogo às{" "}
-                {new Date(
-                  enteredCodes[ticketForCodeModal.codigoIngresso],
-                ).toLocaleTimeString("pt-BR", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  second: "2-digit",
-                })}
+                ✓ Entrada APROVADA pelo ADM
+                {ticketStatuses[ticketForCodeModal.codigoIngresso]?.reviewedAt
+                  ? ` às ${new Date(
+                      ticketStatuses[ticketForCodeModal.codigoIngresso]
+                        .reviewedAt!,
+                    ).toLocaleTimeString("pt-BR", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}`
+                  : ""}
+              </div>
+            )}
+
+            {ticketStatuses[ticketForCodeModal.codigoIngresso]?.status ===
+              "reprovado" && (
+              <div className="w-full mb-4 rounded-xl bg-[#ffdad6] border border-[#93000a]/25 p-3 text-xs font-extrabold text-[#93000a]">
+                ✕ Entrada REPROVADA pelo ADM
+                {ticketStatuses[ticketForCodeModal.codigoIngresso]
+                  ?.motivoReprovacao
+                  ? `: ${ticketStatuses[ticketForCodeModal.codigoIngresso].motivoReprovacao}`
+                  : ""}
               </div>
             )}
 
@@ -3490,40 +3862,29 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
               </span>
             </div>
 
-            <div className="w-full flex flex-col gap-2.5">
-              <a
-                href={buildValidationUrl(ticketForCodeModal)}
-                className="w-full bg-[#006c4a] hover:bg-[#00583c] text-white font-extrabold text-xs uppercase tracking-wider py-3.5 px-4 rounded-xl text-center transition-colors"
+            <div className="w-full flex gap-2.5">
+              <button
+                type="button"
+                onClick={() =>
+                  handleCopyTicketCode(ticketForCodeModal.codigoIngresso)
+                }
+                className={`flex-1 font-extrabold text-xs py-3 rounded-xl cursor-pointer transition-colors ${
+                  copiedCode === ticketForCodeModal.codigoIngresso
+                    ? "bg-[#006c4a] text-white"
+                    : "bg-[#e6f0f5] hover:bg-[#d5e7f0] text-[#016294]"
+                }`}
               >
-                {enteredCodes[ticketForCodeModal.codigoIngresso]
-                  ? "Ver Comprovante de Entrada na Arena"
-                  : "Confirmar Entrada na Arena (Validar QR)"}
-              </a>
-
-              <div className="w-full flex gap-2.5">
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleCopyTicketCode(ticketForCodeModal.codigoIngresso)
-                  }
-                  className={`flex-1 font-extrabold text-xs py-3 rounded-xl cursor-pointer transition-colors ${
-                    copiedCode === ticketForCodeModal.codigoIngresso
-                      ? "bg-[#006c4a] text-white"
-                      : "bg-[#e6f0f5] hover:bg-[#d5e7f0] text-[#016294]"
-                  }`}
-                >
-                  {copiedCode === ticketForCodeModal.codigoIngresso
-                    ? `Copiado (${ticketForCodeModal.codigoIngresso}) ✓`
-                    : "Copiar Código"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveModal(null)}
-                  className="flex-1 bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs py-3 rounded-xl cursor-pointer transition-colors"
-                >
-                  Concluir
-                </button>
-              </div>
+                {copiedCode === ticketForCodeModal.codigoIngresso
+                  ? `Copiado (${ticketForCodeModal.codigoIngresso}) ✓`
+                  : "Copiar Código"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveModal(null)}
+                className="flex-1 bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs py-3 rounded-xl cursor-pointer transition-colors"
+              >
+                Concluir
+              </button>
             </div>
           </div>
         </div>
