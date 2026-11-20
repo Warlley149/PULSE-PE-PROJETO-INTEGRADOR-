@@ -42,9 +42,11 @@ export interface TicketAccess {
   mandante: string;
   mandanteSigla: string;
   mandanteCor: string;
+  mandanteLogoUrl?: string;
   visitante: string;
   visitanteSigla: string;
   visitanteCor: string;
+  visitanteLogoUrl?: string;
   estadio: string;
   dataHorario: string;
   aberturaPortoes: string;
@@ -273,10 +275,20 @@ export async function removeBiometricProfile(): Promise<void> {
   }
 }
 
-export function getStoredTickets(): TicketAccess[] {
+function getTicketsStorageKey(email?: string | null): string | null {
+  const activeEmail = (email ?? getLoggedUserEmail() ?? "")
+    .trim()
+    .toLowerCase();
+  if (!activeEmail) return null;
+  return `${STORAGE_KEYS.TICKETS}_${activeEmail}`;
+}
+
+export function getStoredTickets(email?: string | null): TicketAccess[] {
   if (typeof window === "undefined") return [];
+  const key = getTicketsStorageKey(email);
+  if (!key) return [];
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEYS.TICKETS);
+    const raw = window.localStorage.getItem(key);
     if (!raw) return [];
     return JSON.parse(raw) as TicketAccess[];
   } catch {
@@ -284,16 +296,17 @@ export function getStoredTickets(): TicketAccess[] {
   }
 }
 
-export function getActiveTicket(): TicketAccess | null {
-  const list = getStoredTickets();
+export function getActiveTicket(email?: string | null): TicketAccess | null {
+  const list = getStoredTickets(email);
   return list.length > 0 ? list[0] : null;
 }
 
 export function saveTicketAccess(
   ticket: Omit<TicketAccess, "id" | "createdAt">,
   existingId?: string,
+  email?: string | null,
 ): TicketAccess {
-  const list = getStoredTickets();
+  const list = getStoredTickets(email);
   const now = new Date().toISOString();
 
   const record: TicketAccess = {
@@ -307,7 +320,10 @@ export function saveTicketAccess(
     : [record, ...list];
 
   if (typeof window !== "undefined") {
-    window.localStorage.setItem(STORAGE_KEYS.TICKETS, JSON.stringify(filtered));
+    const key = getTicketsStorageKey(email);
+    if (key) {
+      window.localStorage.setItem(key, JSON.stringify(filtered));
+    }
   }
 
   addSystemNotification({
@@ -323,17 +339,32 @@ export function saveTicketAccess(
   return record;
 }
 
-export function removeTicketAccess(id: string): void {
-  const list = getStoredTickets().filter((t) => t.id !== id);
+export function removeTicketAccess(id: string, email?: string | null): void {
+  const list = getStoredTickets(email).filter((t) => t.id !== id);
   if (typeof window !== "undefined") {
-    window.localStorage.setItem(STORAGE_KEYS.TICKETS, JSON.stringify(list));
+    const key = getTicketsStorageKey(email);
+    if (key) {
+      window.localStorage.setItem(key, JSON.stringify(list));
+    }
   }
 }
 
-export function getStoredNotifications(): SystemNotification[] {
+function getNotificationsStorageKey(email?: string | null): string | null {
+  const activeEmail = (email ?? getLoggedUserEmail() ?? "")
+    .trim()
+    .toLowerCase();
+  if (!activeEmail) return null;
+  return `${STORAGE_KEYS.NOTIFICATIONS}_${activeEmail}`;
+}
+
+export function getStoredNotifications(
+  email?: string | null,
+): SystemNotification[] {
   if (typeof window === "undefined") return [];
+  const key = getNotificationsStorageKey(email);
+  if (!key) return [];
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEYS.NOTIFICATIONS);
+    const raw = window.localStorage.getItem(key);
     if (!raw) return [];
     return JSON.parse(raw) as SystemNotification[];
   } catch {
@@ -361,10 +392,10 @@ export function addSystemNotification(input: {
   };
   const updated = [item, ...list].slice(0, 100);
   if (typeof window !== "undefined") {
-    window.localStorage.setItem(
-      STORAGE_KEYS.NOTIFICATIONS,
-      JSON.stringify(updated),
-    );
+    const key = getNotificationsStorageKey();
+    if (key) {
+      window.localStorage.setItem(key, JSON.stringify(updated));
+    }
     const currentEmail =
       window.localStorage.getItem(STORAGE_KEYS.SESSION_EMAIL) || "";
     void fetch(`${PYTHON_API_URL}/api/v1/notifications`, {
@@ -386,17 +417,20 @@ export function addSystemNotification(input: {
 export function markAllNotificationsRead(): SystemNotification[] {
   const list = getStoredNotifications().map((n) => ({ ...n, lida: true }));
   if (typeof window !== "undefined") {
-    window.localStorage.setItem(
-      STORAGE_KEYS.NOTIFICATIONS,
-      JSON.stringify(list),
-    );
+    const key = getNotificationsStorageKey();
+    if (key) {
+      window.localStorage.setItem(key, JSON.stringify(list));
+    }
   }
   return list;
 }
 
 export function clearNotifications(): void {
   if (typeof window !== "undefined") {
-    window.localStorage.removeItem(STORAGE_KEYS.NOTIFICATIONS);
+    const key = getNotificationsStorageKey();
+    if (key) {
+      window.localStorage.removeItem(key);
+    }
   }
 }
 

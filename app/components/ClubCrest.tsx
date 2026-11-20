@@ -1,9 +1,12 @@
-import React from "react";
+"use client";
+
+import React, { useState } from "react";
 
 interface ClubCrestProps {
   sigla?: string;
   nome?: string;
   corPrimaria?: string;
+  logoUrl?: string;
   size?: "sm" | "md" | "lg";
 }
 
@@ -11,8 +14,10 @@ export function ClubCrest({
   sigla = "",
   nome = "",
   corPrimaria = "#016294",
+  logoUrl,
   size = "md",
 }: ClubCrestProps) {
+  const [imgFailed, setImgFailed] = useState(false);
   const code = sigla.trim().toUpperCase();
 
   const containerSize =
@@ -316,7 +321,15 @@ export function ClubCrest({
     <div
       className={`${containerSize} rounded-full bg-white border border-[#e5e7eb] shadow-xs flex items-center justify-center shrink-0 overflow-hidden`}
     >
-      {code ? (
+      {logoUrl && !imgFailed ? (
+        /* eslint-disable-next-line @next/next/no-img-element */
+        <img
+          src={logoUrl}
+          alt={nome || code || "Escudo do clube"}
+          onError={() => setImgFailed(true)}
+          className="w-full h-full object-contain"
+        />
+      ) : code ? (
         renderShield()
       ) : (
         <span className="text-xs font-extrabold text-[#4e5462]">—</span>

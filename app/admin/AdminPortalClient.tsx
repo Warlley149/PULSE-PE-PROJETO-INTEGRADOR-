@@ -508,6 +508,11 @@ export function AdminPortalClient({
   const pendingCount = tickets.filter((t) => t.status === "pendente").length;
   const approvedCount = tickets.filter((t) => t.status === "aprovado").length;
   const rejectedCount = tickets.filter((t) => t.status === "reprovado").length;
+  const uniqueUsersCount = new Set(
+    tickets.map((t) =>
+      (t.userEmail || t.cpf || t.titular || t.codigo).trim().toLowerCase(),
+    ),
+  ).size;
 
   const visibleTickets = tickets.filter((t) => {
     const matchesStatus = statusFilter === "todos" || t.status === statusFilter;
@@ -516,6 +521,8 @@ export function AdminPortalClient({
       !q ||
       t.codigo.toLowerCase().includes(q) ||
       t.titular.toLowerCase().includes(q) ||
+      (t.cpf || "").toLowerCase().includes(q) ||
+      (t.userEmail || "").toLowerCase().includes(q) ||
       t.jogo.toLowerCase().includes(q) ||
       t.setor.toLowerCase().includes(q);
     return matchesStatus && matchesQuery;
@@ -789,6 +796,9 @@ export function AdminPortalClient({
                   <p>
                     Titular: <strong>{selectedTicket.titular}</strong>
                     {selectedTicket.cpf ? ` • CPF ${selectedTicket.cpf}` : ""}
+                    {selectedTicket.userEmail
+                      ? ` • ${selectedTicket.userEmail}`
+                      : ""}
                   </p>
                   <p>
                     Biometria:{" "}
@@ -877,12 +887,17 @@ export function AdminPortalClient({
           <section className="lg:col-span-7 bg-white rounded-[26px] shadow-[0_6px_28px_rgba(19,27,46,0.06)] p-5 sm:p-6 flex flex-col gap-4">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <div>
-                <h2 className="text-base sm:text-lg font-extrabold text-[#131b2e]">
-                  Lista de Bilhetes Gerados
-                </h2>
-                <p className="text-xs text-[#4e5462]">
-                  Clique em um bilhete para inspecionar ou aprove/reprove
-                  diretamente.
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className="text-base sm:text-lg font-extrabold text-[#131b2e]">
+                    Lista de Bilhetes Gerados (Todos os Usuários)
+                  </h2>
+                  <span className="text-[10.5px] font-extrabold text-[#016294] bg-[#e6f0f5] px-2.5 py-0.5 rounded-full">
+                    {totalCount} bilhete(s) • {uniqueUsersCount} torcedor(es)
+                  </span>
+                </div>
+                <p className="text-xs text-[#4e5462] mt-0.5">
+                  Exibindo todos os ingressos gerados por qualquer usuário da
+                  plataforma, sem exceção.
                 </p>
               </div>
               <div className="flex items-center gap-2.5 self-start sm:self-auto">
@@ -990,7 +1005,9 @@ export function AdminPortalClient({
                       </p>
                       <p className="text-xs text-[#4e5462] truncate">
                         Titular: <strong>{t.titular}</strong>
-                        {t.cpf ? ` • CPF ${t.cpf}` : ""} • {t.dataHorario}
+                        {t.cpf ? ` • CPF ${t.cpf}` : ""}
+                        {t.userEmail ? ` • ${t.userEmail}` : ""} •{" "}
+                        {t.dataHorario}
                       </p>
                       {t.reviewedAt && (
                         <p className="text-[10.5px] text-[#4e5462]">

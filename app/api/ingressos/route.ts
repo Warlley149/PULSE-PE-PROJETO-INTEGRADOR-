@@ -3,7 +3,7 @@ import { getAdminSession } from "@/app/lib/admin-auth";
 import {
   deleteServerTicket,
   getServerTicketByCode,
-  listAllServerTickets,
+  listAllMergedServerTickets,
   upsertServerTicket,
 } from "@/app/lib/server-tickets";
 
@@ -35,8 +35,9 @@ export async function GET(request: Request) {
     );
   }
 
+  const allTickets = await listAllMergedServerTickets();
   return NextResponse.json({
-    tickets: listAllServerTickets(),
+    tickets: allTickets,
   });
 }
 
@@ -55,6 +56,7 @@ export async function POST(request: Request) {
       enderecoPortao?: string;
       titular?: string;
       cpf?: string;
+      userEmail?: string;
       biometriaOk?: boolean;
     };
 
@@ -78,6 +80,7 @@ export async function POST(request: Request) {
       enderecoPortao: body.enderecoPortao || "",
       titular: body.titular || "Titular não informado",
       cpf: body.cpf || "",
+      userEmail: body.userEmail || "",
       biometriaOk: Boolean(body.biometriaOk),
     });
 

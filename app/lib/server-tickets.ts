@@ -16,6 +16,7 @@ export interface ServerTicketRecord {
   enderecoPortao: string;
   titular: string;
   cpf: string;
+  userEmail?: string;
   biometriaOk: boolean;
   status: TicketValidationStatus;
   motivoReprovacao?: string;
@@ -66,6 +67,76 @@ function writeDiskTickets(map: Map<string, ServerTicketRecord>): void {
 
 export function listAllServerTickets(): ServerTicketRecord[] {
   const map = readDiskTickets();
+  return Array.from(map.values()).sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
+}
+
+/**
+ * Merges tickets from local disk (data/tickets.json) AND the Python SQLite
+ * back-end so the Admin portal ALWAYS displays every ticket from every user
+ * without exception.
+ */
+export async function listAllMergedServerTickets(): Promise<
+  ServerTicketRecord[]
+> {
+  const map = readDiskTickets();
+  let changed = false;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2500);
+    const res = await fetch(`${PYTHON_API_URL}/api/v1/tickets`, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (res.ok) {
+      const data = (await res.json()) as { tickets?: ServerTicketRecord[] };
+      if (Array.isArray(data.tickets)) {
+        for (const pyTicket of data.tickets) {
+          if (!pyTicket?.codigo) continue;
+          const code = pyTicket.codigo.trim().toUpperCase();
+          const local = map.get(code);
+          if (!local) {
+            map.set(code, { ...pyTicket, codigo: code });
+            changed = true;
+          } else {
+            // Merge any missing fields (e.g. userEmail or newer review)
+            const localRev = local.reviewedAt
+              ? new Date(local.reviewedAt).getTime()
+              : 0;
+            const pyRev = pyTicket.reviewedAt
+              ? new Date(pyTicket.reviewedAt).getTime()
+              : 0;
+            const merged: ServerTicketRecord =
+              pyRev > localRev
+                ? {
+                    ...local,
+                    ...pyTicket,
+                    codigo: code,
+                    userEmail: pyTicket.userEmail || local.userEmail,
+                  }
+                : {
+                    ...pyTicket,
+                    ...local,
+                    codigo: code,
+                    userEmail: local.userEmail || pyTicket.userEmail,
+                  };
+            map.set(code, merged);
+          }
+        }
+      }
+    }
+  } catch {
+    // Python backend offline — return disk tickets cleanly
+  }
+
+  if (changed) {
+    writeDiskTickets(map);
+  }
+
   return Array.from(map.values()).sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   );

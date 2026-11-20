@@ -41,7 +41,7 @@ import { TicketCodeVisual } from "@/app/components/TicketCodeVisual";
 
 export type AppTab = "ingressos" | "biometria" | "notificacoes" | "perfil";
 type NotifFilter = "todas" | "acesso" | "partidas" | "clube";
-type MatchFilter = "todos" | "ilha" | "recife" | "interior";
+type MatchFilter = "todos" | "brasil" | "pe" | "ilha";
 type ModalType =
   | null
   | "perfil"
@@ -122,8 +122,9 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
   const [depParentesco, setDepParentesco] = useState<string>("");
   const [depDocumento, setDepDocumento] = useState<string>("");
 
-  // Official Upcoming Matches from /api/jogos (FPF-PE & Ilha do Retiro)
+  // Official Upcoming Matches from /api/jogos (ESPN Brasil Nacional + FPF-PE)
   const [officialMatches, setOfficialMatches] = useState<OfficialMatch[]>([]);
+  const [loadingMatches, setLoadingMatches] = useState<boolean>(false);
   const [matchFilter, setMatchFilter] = useState<MatchFilter>("todos");
   const [selectedMatchForTicket, setSelectedMatchForTicket] =
     useState<OfficialMatch | null>(null);
@@ -190,6 +191,25 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     setAcessibilidade(p.acessibilidade);
   }, []);
 
+  const refreshOfficialMatches = useCallback(async () => {
+    setLoadingMatches(true);
+    try {
+      const res = await fetch(`/api/jogos?_t=${Date.now()}`, {
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { jogos?: OfficialMatch[] };
+        if (Array.isArray(data.jogos)) {
+          setOfficialMatches(data.jogos);
+        }
+      }
+    } catch {
+      // Ignore network error
+    } finally {
+      setLoadingMatches(false);
+    }
+  }, []);
+
   useEffect(() => {
     const syncState = () => {
       const savedProfile = getStoredProfile();
@@ -233,6 +253,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
             enderecoPortao: t.enderecoPortao,
             titular: savedProfile?.nome || "Titular não informado",
             cpf: savedProfile?.cpf || "",
+            userEmail: savedProfile?.email || getLoggedUserEmail() || "",
             biometriaOk: Boolean(savedProfile?.faceImageDataUrl),
           }),
         }).catch(() => {});
@@ -277,20 +298,6 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
               };
             }
             setTicketStatuses(next);
-          }
-        }
-      } catch {
-        // Ignore network error
-      }
-    };
-
-    const loadOfficialMatches = async () => {
-      try {
-        const res = await fetch("/api/jogos");
-        if (res.ok) {
-          const data = (await res.json()) as { jogos?: OfficialMatch[] };
-          if (Array.isArray(data.jogos)) {
-            setOfficialMatches(data.jogos);
           }
         }
       } catch {
@@ -347,8 +354,8 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       void loadTicketStatuses();
       void loadAdminSession();
       void loadNetworkOrigin();
+      void refreshOfficialMatches();
     }, 0);
-    void loadOfficialMatches();
     const poll = window.setInterval(() => {
       void loadTicketStatuses();
     }, 5000);
@@ -361,7 +368,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       window.removeEventListener("focus", loadTicketStatuses);
       stopCamera();
     };
-  }, [populateFormFromProfile, stopCamera]);
+  }, [populateFormFromProfile, refreshOfficialMatches, stopCamera]);
 
   // Measure real frame illumination & contrast quality from live video
   useEffect(() => {
@@ -614,6 +621,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         if (data.checks) setFaceChecks(data.checks);
 
         // Mirror validated account & immutable facial fingerprint locally
+        setLoggedUserEmail(data.user.email);
         await registerUserAccount({
           nome: data.user.nome,
           email: data.user.email,
@@ -644,13 +652,15 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
           detalheRodape: "Cadastro biométrico definitivo SDS-PE",
         });
 
-        setLoggedUserEmail(data.user.email);
         setProfile(saved);
         populateFormFromProfile(saved);
         setLoggedEmail(data.user.email);
         setPendingRegistration(null);
         setAuthPassword("");
-        setNotifications(getStoredNotifications());
+        setTickets(getStoredTickets(data.user.email));
+        setActiveTicketIndex(0);
+        setTicketStatuses({});
+        setNotifications(getStoredNotifications(data.user.email));
         setStatusToast(
           `Cadastro e reconhecimento facial aprovados! Impressão única: ${data.user.faceFingerprintId}.`,
         );
@@ -772,9 +782,11 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       mandante: selectedMatchForTicket.mandante.nome,
       mandanteSigla: selectedMatchForTicket.mandante.sigla,
       mandanteCor: selectedMatchForTicket.mandante.corPrimaria,
+      mandanteLogoUrl: selectedMatchForTicket.mandante.logoUrl,
       visitante: selectedMatchForTicket.visitante.nome,
       visitanteSigla: selectedMatchForTicket.visitante.sigla,
       visitanteCor: selectedMatchForTicket.visitante.corPrimaria,
+      visitanteLogoUrl: selectedMatchForTicket.visitante.logoUrl,
       estadio: selectedMatchForTicket.estadio,
       dataHorario: selectedMatchForTicket.dataFormatada,
       aberturaPortoes: selectedMatchForTicket.aberturaPortoes,
@@ -806,6 +818,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         enderecoPortao: created.enderecoPortao,
         titular: profile?.nome || "Titular não informado",
         cpf: profile?.cpf || "",
+        userEmail: profile?.email || loggedEmail || "",
         biometriaOk: hasFaceRegistered,
       }),
     }).catch(() => {});
@@ -891,6 +904,33 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
           setProfile(saved);
           populateFormFromProfile(saved);
           setLoggedEmail(pyData.user.email);
+          const userTickets = getStoredTickets(pyData.user.email);
+          setTickets(userTickets);
+          setActiveTicketIndex(0);
+          setTicketStatuses({});
+          setNotifications(getStoredNotifications(pyData.user.email));
+          for (const t of userTickets) {
+            void fetch("/api/ingressos", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                codigo: t.codigoIngresso,
+                matchId: t.matchId,
+                competicao: t.competicao,
+                jogo: `${t.mandante} x ${t.visitante}`,
+                estadio: t.estadio,
+                dataHorario: t.dataHorario,
+                setor: t.setor,
+                subsetor: t.subsetor,
+                portao: t.portao,
+                enderecoPortao: t.enderecoPortao,
+                titular: saved.nome || "Titular não informado",
+                cpf: saved.cpf || "",
+                userEmail: pyData.user.email,
+                biometriaOk: Boolean(saved.faceImageDataUrl),
+              }),
+            }).catch(() => {});
+          }
           setAuthPassword("");
           setActiveTab("ingressos");
           setStatusToast(`Bem-vindo(a), ${pyData.user.nome}!`);
@@ -907,10 +947,14 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         return;
       }
 
-      const updatedProfile = getStoredProfile();
+      const updatedProfile = getStoredProfile(userRes.account.email);
       setProfile(updatedProfile);
       populateFormFromProfile(updatedProfile);
       setLoggedEmail(userRes.account.email);
+      setTickets(getStoredTickets(userRes.account.email));
+      setActiveTicketIndex(0);
+      setTicketStatuses({});
+      setNotifications(getStoredNotifications(userRes.account.email));
       setAuthPassword("");
       setActiveTab("ingressos");
       setStatusToast(`Bem-vindo(a), ${userRes.account.nome}!`);
@@ -943,8 +987,12 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     }
 
     // Registration only finishes after mandatory facial recognition capture
-    // Clear any previous account's profile/photo from view so each user only sees their own face
+    // Clear any previous account's profile/photo/tickets/notifications from view
     setProfile(null);
+    setTickets([]);
+    setNotifications([]);
+    setTicketStatuses({});
+    setActiveTicketIndex(0);
     setFaceChecks(null);
     setFaceRejectionReasons([]);
     setPendingRegistration({
@@ -1009,8 +1057,8 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
 
   const filteredMatches = officialMatches.filter((m) => {
     if (matchFilter === "ilha") return m.destaqueIlha;
-    if (matchFilter === "recife") return m.cidade.includes("Recife");
-    if (matchFilter === "interior") return !m.cidade.includes("Recife");
+    if (matchFilter === "pe") return m.regiao === "pe";
+    if (matchFilter === "brasil") return m.regiao === "brasil";
     return true;
   });
 
@@ -1416,6 +1464,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     sigla={activeTicket?.mandanteSigla}
                     nome={activeTicket?.mandante}
                     corPrimaria={activeTicket?.mandanteCor}
+                    logoUrl={activeTicket?.mandanteLogoUrl}
                     size="lg"
                   />
                   <div className="flex flex-col min-w-0">
@@ -1447,6 +1496,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     sigla={activeTicket?.visitanteSigla}
                     nome={activeTicket?.visitante}
                     corPrimaria={activeTicket?.visitanteCor}
+                    logoUrl={activeTicket?.visitanteLogoUrl}
                     size="lg"
                   />
                 </div>
@@ -1916,28 +1966,35 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
               )}
             </section>
 
-            {/* Official Upcoming Matches Catalog (FPF-PE & Ilha do Retiro) */}
+            {/* Official Upcoming Matches Catalog (Brasil Ao Vivo + Pernambuco) */}
             <section className="mt-7 flex flex-col">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
                 <div>
-                  <h2 className="text-base sm:text-lg font-extrabold text-[#131b2e] tracking-tight">
-                    Próximos Jogos Oficiais em Pernambuco
-                  </h2>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="text-base sm:text-lg font-extrabold text-[#131b2e] tracking-tight">
+                      Próximos Jogos Oficiais (Brasil & Pernambuco)
+                    </h2>
+                    <span className="inline-flex items-center gap-1 rounded-full bg-[#d4f4e4] px-2.5 py-0.5 text-[10px] font-extrabold text-[#005236] uppercase">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#006c4a] animate-pulse" />
+                      Atualização Automática
+                    </span>
+                  </div>
                   <p className="text-xs text-[#4e5462] mt-0.5">
-                    Base oficial da Federação Pernambucana de Futebol (FPF-PE) e
-                    Estádio da Ilha do Retiro. Escolha uma partida para gerar
-                    seu ingresso.
+                    Partidas reais conectadas ao vivo via ESPN Brasil (Série A,
+                    Série B, Libertadores, Sul-Americana) e base oficial FPF-PE
+                    / Ilha do Retiro. Escolha uma partida para gerar seu
+                    ingresso individual.
                   </p>
                 </div>
 
-                {/* Match Region Filters */}
+                {/* Match Region Filters + Refresh */}
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
                   {(
                     [
-                      { id: "todos", label: "Todos PE" },
+                      { id: "todos", label: "Todos Brasil" },
+                      { id: "brasil", label: "Nacional / Série A-B" },
+                      { id: "pe", label: "Pernambuco (PE)" },
                       { id: "ilha", label: "Ilha do Retiro" },
-                      { id: "recife", label: "Recife" },
-                      { id: "interior", label: "Interior" },
                     ] as { id: MatchFilter; label: string }[]
                   ).map((f) => (
                     <button
@@ -1953,6 +2010,14 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                       {f.label}
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    disabled={loadingMatches}
+                    onClick={() => void refreshOfficialMatches()}
+                    className="px-3 py-1.5 rounded-full text-xs font-extrabold whitespace-nowrap bg-[#e6f0f5] hover:bg-[#d5e7f0] text-[#016294] cursor-pointer transition-colors disabled:opacity-60"
+                  >
+                    {loadingMatches ? "Atualizando..." : "↻ Atualizar Jogos"}
+                  </button>
                 </div>
               </div>
 
@@ -1977,11 +2042,15 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                           <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#016294] bg-[#e6f0f5] px-2.5 py-0.5 rounded-full truncate">
                             {match.competicao}
                           </span>
-                          {match.destaqueIlha && (
+                          {match.aoVivoApi ? (
+                            <span className="text-[9.5px] font-extrabold uppercase tracking-wider text-[#005236] bg-[#d4f4e4] px-2.5 py-0.5 rounded-full shrink-0">
+                              ESPN • AO VIVO
+                            </span>
+                          ) : match.destaqueIlha ? (
                             <span className="text-[9.5px] font-extrabold uppercase tracking-wider text-[#93000a] bg-[#ffdad6] px-2.5 py-0.5 rounded-full shrink-0">
                               ILHA DO RETIRO
                             </span>
-                          )}
+                          ) : null}
                         </div>
 
                         {/* Clubs Row */}
@@ -1991,6 +2060,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                               sigla={match.mandante.sigla}
                               nome={match.mandante.nome}
                               corPrimaria={match.mandante.corPrimaria}
+                              logoUrl={match.mandante.logoUrl}
                               size="sm"
                             />
                             <span className="text-xs sm:text-sm font-extrabold text-[#131b2e] truncate">
@@ -2010,6 +2080,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                               sigla={match.visitante.sigla}
                               nome={match.visitante.nome}
                               corPrimaria={match.visitante.corPrimaria}
+                              logoUrl={match.visitante.logoUrl}
                               size="sm"
                             />
                           </div>
@@ -2027,7 +2098,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                             {match.estadio} • {match.cidade}
                           </p>
                           <p className="text-[10px] text-[#4e5462] truncate">
-                            {match.rodada}
+                            {match.rodada} • Fonte: {match.fonte}
                           </p>
                         </div>
                       </div>
@@ -3787,6 +3858,10 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     logoutUserSession();
                     setLoggedEmail(null);
                     setProfile(null);
+                    setTickets([]);
+                    setNotifications([]);
+                    setTicketStatuses({});
+                    setActiveTicketIndex(0);
                     setFaceChecks(null);
                     setFaceRejectionReasons([]);
                     setPendingRegistration(null);

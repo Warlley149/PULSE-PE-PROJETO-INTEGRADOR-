@@ -6,6 +6,7 @@ export interface ClubInfo {
   corPrimaria: string;
   corSecundaria: string;
   cidade: string;
+  logoUrl?: string;
 }
 
 export interface StadiumSector {
@@ -29,8 +30,10 @@ export interface OfficialMatch {
   aberturaPortoes: string;
   estadio: string;
   cidade: string;
+  regiao: "pe" | "brasil";
   destaqueIlha: boolean;
   fonte: string;
+  aoVivoApi: boolean;
   setores: StadiumSector[];
 }
 
@@ -55,13 +58,6 @@ export const CLUBES_PE: Record<string, ClubInfo> = {
     corPrimaria: "#111111",
     corSecundaria: "#e11d48",
     cidade: "Recife-PE",
-  },
-  RETRO: {
-    sigla: "RET",
-    nome: "Retrô FC",
-    corPrimaria: "#1e3a8a",
-    corSecundaria: "#facc15",
-    cidade: "Camaragibe-PE",
   },
   CENTRAL: {
     sigla: "CEN",
@@ -91,30 +87,8 @@ export const CLUBES_PE: Record<string, ClubInfo> = {
     corSecundaria: "#111111",
     cidade: "Paulista-PE",
   },
-  MAGUARY: {
-    sigla: "MAG",
-    nome: "Maguary",
-    corPrimaria: "#1d4ed8",
-    corSecundaria: "#ffffff",
-    cidade: "Bonito-PE",
-  },
-  DECISAO: {
-    sigla: "DEC",
-    nome: "Decisão",
-    corPrimaria: "#047857",
-    corSecundaria: "#facc15",
-    cidade: "Sertânia-PE",
-  },
-  VITORIA_PE: {
-    sigla: "VIT",
-    nome: "Vitória das Tabocas",
-    corPrimaria: "#991b1b",
-    corSecundaria: "#ffffff",
-    cidade: "Vitória de Santo Antão-PE",
-  },
 };
 
-// Official sectors and gates from sportrecife.com.br (Ilha do Retiro)
 export const SETORES_ILHA_DO_RETIRO: StadiumSector[] = [
   {
     id: "cadeiras-centrais",
@@ -198,41 +172,37 @@ const SETORES_AFLITOS: StadiumSector[] = [
   },
 ];
 
-const SETORES_LACERDAO: StadiumSector[] = [
+const SETORES_ARENA_PADRAO = (estadio: string): StadiumSector[] => [
   {
-    id: "lacerdao-social",
-    nome: "Arquibancada Social",
+    id: "setor-norte",
+    nome: "Arquibancada Norte",
+    subsetor: "Setor Popular • Acesso Facial",
+    portao: "01",
+    endereco: `Portão Norte • ${estadio}`,
+  },
+  {
+    id: "setor-leste",
+    nome: "Cadeira Leste Central",
+    subsetor: "Anel Inferior Central",
+    portao: "02",
+    endereco: `Portão Principal • ${estadio}`,
+  },
+  {
+    id: "setor-oeste",
+    nome: "Cadeira Oeste Premium",
     subsetor: "Setor Coberto",
-    portao: "01",
-    endereco: "Av. Agamenon Magalhães, Caruaru",
+    portao: "04",
+    endereco: `Portão Oeste • ${estadio}`,
   },
   {
-    id: "lacerdao-geral",
-    nome: "Arquibancada Geral",
-    subsetor: "Setor Popular",
-    portao: "02",
-    endereco: "Rua São Paulo, Caruaru",
+    id: "setor-sul-visitante",
+    nome: "Setor Sul (Visitante)",
+    subsetor: "Acesso Exclusivo Visitante",
+    portao: "08",
+    endereco: `Portão Visitante • ${estadio}`,
   },
 ];
 
-const SETORES_PAULO_COELHO: StadiumSector[] = [
-  {
-    id: "paulo-coelho-central",
-    nome: "Arquibancada Central",
-    subsetor: "Setor Principal",
-    portao: "01",
-    endereco: "Av. Tancredo Neves, Petrolina",
-  },
-  {
-    id: "paulo-coelho-geral",
-    nome: "Arquibancada Geral",
-    subsetor: "Setor Leste",
-    portao: "02",
-    endereco: "Av. Tancredo Neves, Petrolina",
-  },
-];
-
-// Official upcoming matches verified on Federação Pernambucana de Futebol (FPF-PE)
 const OFFICIAL_FPF_MATCHES: OfficialMatch[] = [
   {
     id: "fpf-2027-frevo-sport-estreia",
@@ -247,8 +217,10 @@ const OFFICIAL_FPF_MATCHES: OfficialMatch[] = [
     aberturaPortoes: "14:00",
     estadio: "Ilha do Retiro",
     cidade: "Recife-PE",
+    regiao: "pe",
     destaqueIlha: true,
-    fonte: "FPF-PE • Conselho Técnico Turno Frevo 2027",
+    fonte: "FPF-PE • Oficial",
+    aoVivoApi: false,
     setores: SETORES_ILHA_DO_RETIRO,
   },
   {
@@ -264,9 +236,11 @@ const OFFICIAL_FPF_MATCHES: OfficialMatch[] = [
     aberturaPortoes: "14:00",
     estadio: "Estádio Paulo Coelho",
     cidade: "Petrolina-PE",
+    regiao: "pe",
     destaqueIlha: false,
-    fonte: "FPF-PE • Tabela Oficial",
-    setores: SETORES_PAULO_COELHO,
+    fonte: "FPF-PE • Oficial",
+    aoVivoApi: false,
+    setores: SETORES_ARENA_PADRAO("Estádio Paulo Coelho"),
   },
   {
     id: "fpf-2026-forro-r1-cen-ibi",
@@ -281,9 +255,11 @@ const OFFICIAL_FPF_MATCHES: OfficialMatch[] = [
     aberturaPortoes: "15:00",
     estadio: "Estádio Lacerdão",
     cidade: "Caruaru-PE",
+    regiao: "pe",
     destaqueIlha: false,
-    fonte: "FPF-PE • Tabela Oficial",
-    setores: SETORES_LACERDAO,
+    fonte: "FPF-PE • Oficial",
+    aoVivoApi: false,
+    setores: SETORES_ARENA_PADRAO("Estádio Lacerdão"),
   },
   {
     id: "fpf-2026-forro-r2-ame-cen",
@@ -298,26 +274,11 @@ const OFFICIAL_FPF_MATCHES: OfficialMatch[] = [
     aberturaPortoes: "14:00",
     estadio: "Estádio dos Aflitos",
     cidade: "Recife-PE",
+    regiao: "pe",
     destaqueIlha: false,
-    fonte: "FPF-PE • Tabela Oficial",
+    fonte: "FPF-PE • Oficial",
+    aoVivoApi: false,
     setores: SETORES_AFLITOS,
-  },
-  {
-    id: "fpf-2026-forro-r2-pet-ibi",
-    competicao: "PERNAMBUCANO • TURNO FORRÓ",
-    temporada: "2026/27",
-    rodada: "2ª Rodada • Quadrangular Final",
-    mandante: CLUBES_PE.PETROLINA,
-    visitante: CLUBES_PE.IBIS,
-    dataIso: "2026-11-25T16:00:00-03:00",
-    dataFormatada: "Qua, 25/11 • 16:00",
-    horario: "16:00",
-    aberturaPortoes: "14:00",
-    estadio: "Estádio Paulo Coelho",
-    cidade: "Petrolina-PE",
-    destaqueIlha: false,
-    fonte: "FPF-PE • Tabela Oficial",
-    setores: SETORES_PAULO_COELHO,
   },
   {
     id: "fpf-2026-forro-r3-ibi-ame",
@@ -332,35 +293,182 @@ const OFFICIAL_FPF_MATCHES: OfficialMatch[] = [
     aberturaPortoes: "14:00",
     estadio: "Estádio dos Aflitos",
     cidade: "Recife-PE",
+    regiao: "pe",
     destaqueIlha: false,
-    fonte: "FPF-PE • Tabela Oficial",
+    fonte: "FPF-PE • Oficial",
+    aoVivoApi: false,
     setores: SETORES_AFLITOS,
-  },
-  {
-    id: "fpf-2026-forro-r3-cen-pet",
-    competicao: "PERNAMBUCANO • TURNO FORRÓ",
-    temporada: "2026/27",
-    rodada: "3ª Rodada • Quadrangular Final",
-    mandante: CLUBES_PE.CENTRAL,
-    visitante: CLUBES_PE.PETROLINA,
-    dataIso: "2026-11-29T16:00:00-03:00",
-    dataFormatada: "Dom, 29/11 • 16:00",
-    horario: "16:00",
-    aberturaPortoes: "14:00",
-    estadio: "Estádio Lacerdão",
-    cidade: "Caruaru-PE",
-    destaqueIlha: false,
-    fonte: "FPF-PE • Tabela Oficial",
-    setores: SETORES_LACERDAO,
   },
 ];
 
+interface EspnCompetitor {
+  homeAway?: "home" | "away";
+  team?: {
+    displayName?: string;
+    shortDisplayName?: string;
+    abbreviation?: string;
+    color?: string;
+    alternateColor?: string;
+    logo?: string;
+  };
+}
+
+interface EspnEvent {
+  id?: string;
+  date?: string;
+  season?: { year?: number };
+  competitions?: Array<{
+    venue?: {
+      fullName?: string;
+      address?: { city?: string; country?: string };
+    };
+    competitors?: EspnCompetitor[];
+  }>;
+}
+
+const ESPN_LEAGUES = [
+  { slug: "bra.1", label: "BRASILEIRÃO SÉRIE A" },
+  { slug: "bra.2", label: "BRASILEIRÃO SÉRIE B" },
+  { slug: "conmebol.libertadores", label: "COPA LIBERTADORES" },
+  { slug: "conmebol.sudamericana", label: "COPA SUL-AMERICANA" },
+];
+
+function formatBrazilDateTime(iso: string): {
+  dataFormatada: string;
+  horario: string;
+  aberturaPortoes: string;
+} {
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) {
+    return { dataFormatada: "Em breve", horario: "—", aberturaPortoes: "—" };
+  }
+
+  const dataFormatada = dt.toLocaleString("pt-BR", {
+    timeZone: "America/Recife",
+    weekday: "short",
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  const horario = dt.toLocaleTimeString("pt-BR", {
+    timeZone: "America/Recife",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  const openDt = new Date(dt.getTime() - 2 * 60 * 60 * 1000);
+  const aberturaPortoes = openDt.toLocaleTimeString("pt-BR", {
+    timeZone: "America/Recife",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  return { dataFormatada, horario, aberturaPortoes };
+}
+
+async function fetchEspnLiveMatches(): Promise<OfficialMatch[]> {
+  const results: OfficialMatch[] = [];
+
+  await Promise.all(
+    ESPN_LEAGUES.map(async (league) => {
+      try {
+        const res = await fetch(
+          `https://site.api.espn.com/apis/site/v2/sports/soccer/${league.slug}/scoreboard?lang=pt`,
+          { next: { revalidate: 300 } },
+        );
+        if (!res.ok) return;
+        const json = (await res.json()) as { events?: EspnEvent[] };
+        const events = Array.isArray(json.events) ? json.events : [];
+
+        for (const ev of events) {
+          const comp = ev.competitions?.[0];
+          const competitors = comp?.competitors || [];
+          const home = competitors.find((c) => c.homeAway === "home");
+          const away = competitors.find((c) => c.homeAway === "away");
+          if (!home?.team || !away?.team || !ev.date) continue;
+
+          const estadio = comp?.venue?.fullName || "Arena Oficial";
+          const cidade = comp?.venue?.address?.city || "Brasil";
+          const isIlha = estadio.toLowerCase().includes("ilha do retiro");
+          const isPe =
+            isIlha ||
+            cidade.toLowerCase().includes("recife") ||
+            estadio.toLowerCase().includes("aflitos") ||
+            estadio.toLowerCase().includes("arruda");
+
+          const { dataFormatada, horario, aberturaPortoes } =
+            formatBrazilDateTime(ev.date);
+
+          results.push({
+            id: `espn-${league.slug}-${ev.id}`,
+            competicao: league.label,
+            temporada: String(
+              ev.season?.year || new Date(ev.date).getFullYear(),
+            ),
+            rodada: "Calendário Oficial • Atualização Automática ESPN",
+            mandante: {
+              sigla: (home.team.abbreviation || "MAN").slice(0, 3),
+              nome:
+                home.team.shortDisplayName ||
+                home.team.displayName ||
+                "Mandante",
+              corPrimaria: home.team.color ? `#${home.team.color}` : "#016294",
+              corSecundaria: home.team.alternateColor
+                ? `#${home.team.alternateColor}`
+                : "#ffffff",
+              cidade,
+              logoUrl: home.team.logo,
+            },
+            visitante: {
+              sigla: (away.team.abbreviation || "VIS").slice(0, 3),
+              nome:
+                away.team.shortDisplayName ||
+                away.team.displayName ||
+                "Visitante",
+              corPrimaria: away.team.color ? `#${away.team.color}` : "#4e5462",
+              corSecundaria: away.team.alternateColor
+                ? `#${away.team.alternateColor}`
+                : "#ffffff",
+              cidade: "Brasil",
+              logoUrl: away.team.logo,
+            },
+            dataIso: ev.date,
+            dataFormatada,
+            horario,
+            aberturaPortoes,
+            estadio,
+            cidade,
+            regiao: isPe ? "pe" : "brasil",
+            destaqueIlha: isIlha,
+            fonte: "ESPN Brasil • Tempo Real",
+            aoVivoApi: true,
+            setores: isIlha
+              ? SETORES_ILHA_DO_RETIRO
+              : SETORES_ARENA_PADRAO(estadio),
+          });
+        }
+      } catch {
+        // Skip failing league gracefully
+      }
+    }),
+  );
+
+  return results;
+}
+
 export async function GET() {
+  const liveEspnMatches = await fetchEspnLiveMatches();
+  const allMatches = [...liveEspnMatches, ...OFFICIAL_FPF_MATCHES].sort(
+    (a, b) => new Date(a.dataIso).getTime() - new Date(b.dataIso).getTime(),
+  );
+
   return NextResponse.json({
     atualizadoEm: new Date().toISOString(),
     fontePrincipal:
-      "Federação Pernambucana de Futebol (FPF-PE) & Sport Club do Recife (Ilha do Retiro)",
-    clubes: Object.values(CLUBES_PE),
-    jogos: OFFICIAL_FPF_MATCHES,
+      "ESPN Brasil (API Ao Vivo — Série A, Série B, Libertadores, Sul-Americana) & FPF-PE (Ilha do Retiro / Pernambuco)",
+    totalAoVivoEspn: liveEspnMatches.length,
+    jogos: allMatches,
   });
 }
