@@ -22,15 +22,18 @@ import {
   type TicketAccess,
 } from "@/app/lib/storage";
 
+import type { OfficialMatch, StadiumSector } from "@/app/api/jogos/route";
+
 export type AppTab = "ingressos" | "biometria" | "notificacoes" | "perfil";
 type NotifFilter = "todas" | "acesso" | "partidas" | "clube";
+type MatchFilter = "todos" | "ilha" | "recife" | "interior";
 type ModalType =
   | null
   | "perfil"
   | "documento"
   | "dependentes"
   | "acessibilidade"
-  | "ingresso"
+  | "gerar-ingresso"
   | "notificacao"
   | "carteirinha";
 
@@ -74,19 +77,13 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
   const [depParentesco, setDepParentesco] = useState<string>("");
   const [depDocumento, setDepDocumento] = useState<string>("");
 
-  // Ticket Form State (100% user-entered, empty by default)
-  const [competicao, setCompeticao] = useState<string>("");
-  const [temporada, setTemporada] = useState<string>("");
-  const [mandante, setMandante] = useState<string>("");
-  const [visitante, setVisitante] = useState<string>("");
-  const [dataHorario, setDataHorario] = useState<string>("");
-  const [aberturaPortoes, setAberturaPortoes] = useState<string>("");
-  const [setor, setSetor] = useState<string>("");
-  const [subsetor, setSubsetor] = useState<string>("");
-  const [portao, setPortao] = useState<string>("");
-  const [enderecoPortao, setEnderecoPortao] = useState<string>("");
-  const [tipoAcesso, setTipoAcesso] = useState<string>("");
-  const [fila, setFila] = useState<string>("");
+  // Official Upcoming Matches from /api/jogos (FPF-PE & Ilha do Retiro)
+  const [officialMatches, setOfficialMatches] = useState<OfficialMatch[]>([]);
+  const [matchFilter, setMatchFilter] = useState<MatchFilter>("todos");
+  const [selectedMatchForTicket, setSelectedMatchForTicket] =
+    useState<OfficialMatch | null>(null);
+  const [selectedSectorId, setSelectedSectorId] = useState<string>("");
+  const [activeTicketIndex, setActiveTicketIndex] = useState<number>(0);
 
   // Custom Notification Form State
   const [notifCategoria, setNotifCategoria] =
@@ -100,7 +97,10 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
   const [formError, setFormError] = useState<string | null>(null);
   const [statusToast, setStatusToast] = useState<string | null>(null);
 
-  const activeTicket = tickets.length > 0 ? tickets[0] : null;
+  const activeTicket =
+    tickets.length > 0
+      ? tickets[Math.min(activeTicketIndex, tickets.length - 1)]
+      : null;
   const hasFaceRegistered = Boolean(profile?.faceImageDataUrl);
   const hasUserRegistered = Boolean(profile?.nome);
 
@@ -130,36 +130,6 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     setAcessibilidade(p.acessibilidade);
   }, []);
 
-  const populateFormFromTicket = useCallback((t: TicketAccess | null) => {
-    if (!t) {
-      setCompeticao("");
-      setTemporada("");
-      setMandante("");
-      setVisitante("");
-      setDataHorario("");
-      setAberturaPortoes("");
-      setSetor("");
-      setSubsetor("");
-      setPortao("");
-      setEnderecoPortao("");
-      setTipoAcesso("");
-      setFila("");
-      return;
-    }
-    setCompeticao(t.competicao);
-    setTemporada(t.temporada);
-    setMandante(t.mandante);
-    setVisitante(t.visitante);
-    setDataHorario(t.dataHorario);
-    setAberturaPortoes(t.aberturaPortoes);
-    setSetor(t.setor);
-    setSubsetor(t.subsetor);
-    setPortao(t.portao);
-    setEnderecoPortao(t.enderecoPortao);
-    setTipoAcesso(t.tipoAcesso);
-    setFila(t.fila);
-  }, []);
-
   useEffect(() => {
     const syncState = () => {
       const savedProfile = getStoredProfile();
@@ -170,17 +140,31 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       setTickets(savedTickets);
       setNotifications(savedNotifs);
       populateFormFromProfile(savedProfile);
-      populateFormFromTicket(savedTickets[0] || null);
+    };
+
+    const loadOfficialMatches = async () => {
+      try {
+        const res = await fetch("/api/jogos");
+        if (res.ok) {
+          const data = (await res.json()) as { jogos?: OfficialMatch[] };
+          if (Array.isArray(data.jogos)) {
+            setOfficialMatches(data.jogos);
+          }
+        }
+      } catch {
+        // Ignore network error
+      }
     };
 
     const timer = window.setTimeout(syncState, 0);
+    void loadOfficialMatches();
     window.addEventListener("storage", syncState);
     return () => {
       window.clearTimeout(timer);
       window.removeEventListener("storage", syncState);
       stopCamera();
     };
-  }, [populateFormFromProfile, populateFormFromTicket, stopCamera]);
+  }, [populateFormFromProfile, stopCamera]);
 
   // Measure real frame illumination & contrast quality from live video
   useEffect(() => {
@@ -430,41 +414,65 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     setProfile(saved);
   };
 
-  const handleSaveTicket = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (
-      !mandante.trim() ||
-      !visitante.trim() ||
-      !setor.trim() ||
-      !portao.trim()
-    ) {
-      return;
-    }
+  const handleOpenMatchPicker = (match: OfficialMatch) => {
+    setSelectedMatchForTicket(match);
+    setSelectedSectorId(match.setores[0]?.id || "");
+    setActiveModal("gerar-ingresso");
+  };
 
-    saveTicketAccess(
-      {
-        competicao: competicao.trim(),
-        temporada: temporada.trim(),
-        mandante: mandante.trim(),
-        visitante: visitante.trim(),
-        dataHorario: dataHorario.trim(),
-        aberturaPortoes: aberturaPortoes.trim(),
-        setor: setor.trim(),
-        subsetor: subsetor.trim(),
-        portao: portao.trim(),
-        enderecoPortao: enderecoPortao.trim(),
-        tipoAcesso: tipoAcesso.trim(),
-        fila: fila.trim(),
-      },
-      activeTicket?.id,
-    );
+  const handleGenerateTicketFromMatch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedMatchForTicket) return;
+
+    const chosenSector: StadiumSector =
+      selectedMatchForTicket.setores.find((s) => s.id === selectedSectorId) ||
+      selectedMatchForTicket.setores[0];
+
+    if (!chosenSector) return;
+
+    const randomCode = `PE-${Math.floor(100000 + Math.random() * 900000)}`;
+
+    saveTicketAccess({
+      matchId: selectedMatchForTicket.id,
+      codigoIngresso: randomCode,
+      competicao: selectedMatchForTicket.competicao,
+      temporada: selectedMatchForTicket.temporada,
+      mandante: selectedMatchForTicket.mandante.nome,
+      mandanteSigla: selectedMatchForTicket.mandante.sigla,
+      mandanteCor: selectedMatchForTicket.mandante.corPrimaria,
+      visitante: selectedMatchForTicket.visitante.nome,
+      visitanteSigla: selectedMatchForTicket.visitante.sigla,
+      visitanteCor: selectedMatchForTicket.visitante.corPrimaria,
+      estadio: selectedMatchForTicket.estadio,
+      dataHorario: selectedMatchForTicket.dataFormatada,
+      aberturaPortoes: selectedMatchForTicket.aberturaPortoes,
+      setor: chosenSector.nome,
+      subsetor: chosenSector.subsetor,
+      portao: chosenSector.portao,
+      enderecoPortao: chosenSector.endereco,
+      tipoAcesso: "Catraca Express",
+      fila: hasFaceRegistered
+        ? "Fila Facial Dedicada"
+        : "Libera após biometria facial",
+      fonte: selectedMatchForTicket.fonte,
+    });
 
     const updatedTickets = getStoredTickets();
     setTickets(updatedTickets);
+    setActiveTicketIndex(0);
     setNotifications(getStoredNotifications());
     setActiveModal(null);
-    setStatusToast("Ingresso salvo com sucesso.");
+    setStatusToast(
+      `Ingresso ${randomCode} gerado para ${selectedMatchForTicket.mandante.nome} x ${selectedMatchForTicket.visitante.nome} (${chosenSector.nome} • Portão ${chosenSector.portao}).`,
+    );
   };
+
+  const filteredMatches = officialMatches.filter((m) => {
+    if (matchFilter === "ilha") return m.destaqueIlha;
+    if (matchFilter === "recife") return m.cidade.includes("Recife");
+    if (matchFilter === "interior") return !m.cidade.includes("Recife");
+    return true;
+  });
 
   const handleAddCustomNotification = (e: React.FormEvent) => {
     e.preventDefault();
@@ -767,14 +775,42 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                 </span>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setActiveModal("ingresso")}
-                className="text-[11px] sm:text-xs font-extrabold text-[#016294] bg-[#e6f0f5] hover:bg-[#d5e7f0] px-3 py-1.5 rounded-xl shrink-0 cursor-pointer transition-colors"
-              >
-                {activeTicket ? "Editar Ingresso" : "+ Adicionar Ingresso"}
-              </button>
+              {activeTicket && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    removeTicketAccess(activeTicket.id);
+                    const next = getStoredTickets();
+                    setTickets(next);
+                    setActiveTicketIndex(0);
+                    setStatusToast("Ingresso cancelado.");
+                  }}
+                  className="text-[11px] sm:text-xs font-extrabold text-[#93000a] bg-[#ffdad6] hover:bg-[#ffc8c2] px-3 py-1.5 rounded-xl shrink-0 cursor-pointer transition-colors"
+                >
+                  Cancelar Ingresso
+                </button>
+              )}
             </div>
+
+            {/* Multiple Generated Tickets Switcher (if user chose more than 1 match) */}
+            {tickets.length > 1 && (
+              <div className="mb-3 flex items-center gap-2 overflow-x-auto pb-1">
+                {tickets.map((t, idx) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setActiveTicketIndex(idx)}
+                    className={`px-3 py-1.5 rounded-full text-xs whitespace-nowrap transition-colors cursor-pointer ${
+                      idx === activeTicketIndex
+                        ? "bg-[#016294] text-white font-extrabold"
+                        : "bg-[#f2f3ff] text-[#4e5462] font-semibold"
+                    }`}
+                  >
+                    {t.mandanteSigla} x {t.visitanteSigla} ({t.setor})
+                  </button>
+                ))}
+              </div>
+            )}
 
             {/* Main Match Ticket Card */}
             <section className="bg-white rounded-[26px] sm:rounded-[30px] shadow-[0_6px_28px_rgba(19,27,46,0.06)] pt-4 sm:pt-5 pb-5 sm:pb-7 flex flex-col overflow-hidden">
@@ -816,14 +852,22 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
               {/* Teams Matchup Section */}
               <div className="px-4 sm:px-6 md:px-8 pt-5 sm:pt-6 pb-4 sm:pb-5 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0">
-                  <div className="w-11 h-11 sm:w-14 sm:h-14 rounded-full bg-[#f2f3ff] border border-[#e5e7eb] shadow-xs flex items-center justify-center shrink-0 text-xs sm:text-sm font-extrabold text-[#016294] uppercase">
-                    {activeTicket?.mandante
-                      ? activeTicket.mandante.slice(0, 3)
-                      : "—"}
+                  <div
+                    className="w-11 h-11 sm:w-14 sm:h-14 rounded-full border border-[#e5e7eb] shadow-xs flex items-center justify-center shrink-0 text-xs sm:text-sm font-extrabold uppercase"
+                    style={
+                      activeTicket?.mandanteCor
+                        ? {
+                            backgroundColor: activeTicket.mandanteCor,
+                            color: "#ffffff",
+                          }
+                        : { backgroundColor: "#f2f3ff", color: "#016294" }
+                    }
+                  >
+                    {activeTicket?.mandanteSigla || "—"}
                   </div>
                   <div className="flex flex-col min-w-0">
                     <span className="text-[14.5px] sm:text-lg md:text-xl font-extrabold text-[#131b2e] leading-tight truncate">
-                      {activeTicket?.mandante || "Adicione o Mandante"}
+                      {activeTicket?.mandante || "Escolha um jogo abaixo"}
                     </span>
                     <span className="text-[9.5px] sm:text-[11px] font-bold text-[#016294] uppercase tracking-[0.05em] mt-0.5">
                       MANDANTE
@@ -840,16 +884,24 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                 <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0">
                   <div className="flex flex-col items-end text-right min-w-0">
                     <span className="text-[14.5px] sm:text-lg md:text-xl font-extrabold text-[#131b2e] leading-tight truncate">
-                      {activeTicket?.visitante || "Adicione o Visitante"}
+                      {activeTicket?.visitante || "Próximo Confronto"}
                     </span>
                     <span className="text-[9.5px] sm:text-[11px] font-bold text-[#4e5462] uppercase tracking-[0.05em] mt-0.5">
                       VISITANTE
                     </span>
                   </div>
-                  <div className="w-11 h-11 sm:w-14 sm:h-14 rounded-full bg-[#f2f3ff] border border-[#e5e7eb] shadow-xs flex items-center justify-center shrink-0 text-xs sm:text-sm font-extrabold text-[#4e5462] uppercase">
-                    {activeTicket?.visitante
-                      ? activeTicket.visitante.slice(0, 3)
-                      : "—"}
+                  <div
+                    className="w-11 h-11 sm:w-14 sm:h-14 rounded-full border border-[#e5e7eb] shadow-xs flex items-center justify-center shrink-0 text-xs sm:text-sm font-extrabold uppercase"
+                    style={
+                      activeTicket?.visitanteCor
+                        ? {
+                            backgroundColor: activeTicket.visitanteCor,
+                            color: "#ffffff",
+                          }
+                        : { backgroundColor: "#f2f3ff", color: "#4e5462" }
+                    }
+                  >
+                    {activeTicket?.visitanteSigla || "—"}
                   </div>
                 </div>
               </div>
@@ -1041,6 +1093,151 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                   </span>
                   <span className="w-full sm:w-auto text-center">catraca.</span>
                 </p>
+                {activeTicket?.codigoIngresso && (
+                  <p className="text-[10px] font-mono font-bold text-[#016294] mt-1.5">
+                    Código do Ingresso: {activeTicket.codigoIngresso} •{" "}
+                    {activeTicket.estadio}
+                  </p>
+                )}
+              </div>
+            </section>
+
+            {/* Official Upcoming Matches Catalog (FPF-PE & Ilha do Retiro) */}
+            <section className="mt-7 flex flex-col">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+                <div>
+                  <h2 className="text-base sm:text-lg font-extrabold text-[#131b2e] tracking-tight">
+                    Próximos Jogos Oficiais em Pernambuco
+                  </h2>
+                  <p className="text-xs text-[#4e5462] mt-0.5">
+                    Base oficial da Federação Pernambucana de Futebol (FPF-PE) e
+                    Estádio da Ilha do Retiro. Escolha uma partida para gerar
+                    seu ingresso.
+                  </p>
+                </div>
+
+                {/* Match Region Filters */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+                  {(
+                    [
+                      { id: "todos", label: "Todos PE" },
+                      { id: "ilha", label: "Ilha do Retiro" },
+                      { id: "recife", label: "Recife" },
+                      { id: "interior", label: "Interior" },
+                    ] as { id: MatchFilter; label: string }[]
+                  ).map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => setMatchFilter(f.id)}
+                      className={`px-3 py-1.5 rounded-full text-xs whitespace-nowrap transition-colors cursor-pointer ${
+                        matchFilter === f.id
+                          ? "bg-[#016294] text-white font-extrabold"
+                          : "bg-white text-[#4e5462] hover:text-[#131b2e] font-semibold border border-[#eceaf6]"
+                      }`}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Official Matches Responsive Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                {filteredMatches.map((match) => {
+                  const alreadyGenerated = tickets.some(
+                    (t) => t.matchId === match.id,
+                  );
+
+                  return (
+                    <article
+                      key={match.id}
+                      className={`bg-white rounded-[22px] p-4 sm:p-5 shadow-[0_4px_20px_rgba(19,27,46,0.05)] flex flex-col justify-between border ${
+                        match.destaqueIlha
+                          ? "border-[#016294]/35"
+                          : "border-transparent"
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between gap-2 mb-3">
+                          <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#016294] bg-[#e6f0f5] px-2.5 py-0.5 rounded-full truncate">
+                            {match.competicao}
+                          </span>
+                          {match.destaqueIlha && (
+                            <span className="text-[9.5px] font-extrabold uppercase tracking-wider text-[#93000a] bg-[#ffdad6] px-2.5 py-0.5 rounded-full shrink-0">
+                              ILHA DO RETIRO
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Clubs Row */}
+                        <div className="flex items-center justify-between gap-2 my-3">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              className="w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-extrabold text-white shrink-0 shadow-2xs"
+                              style={{
+                                backgroundColor: match.mandante.corPrimaria,
+                              }}
+                            >
+                              {match.mandante.sigla}
+                            </span>
+                            <span className="text-xs sm:text-sm font-extrabold text-[#131b2e] truncate">
+                              {match.mandante.nome}
+                            </span>
+                          </div>
+
+                          <span className="text-[10px] font-extrabold text-[#4e5462] bg-[#f2f3ff] px-2 py-1 rounded-full shrink-0">
+                            VS
+                          </span>
+
+                          <div className="flex items-center gap-2 min-w-0 justify-end">
+                            <span className="text-xs sm:text-sm font-extrabold text-[#131b2e] truncate text-right">
+                              {match.visitante.nome}
+                            </span>
+                            <span
+                              className="w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-extrabold text-white shrink-0 shadow-2xs"
+                              style={{
+                                backgroundColor: match.visitante.corPrimaria,
+                              }}
+                            >
+                              {match.visitante.sigla}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Date, Stadium & Source */}
+                        <div className="bg-[#f2f3ff] rounded-xl p-3 flex flex-col gap-1 text-[11px] text-[#4e5462]">
+                          <div className="flex items-center justify-between font-bold text-[#131b2e]">
+                            <span>{match.dataFormatada}</span>
+                            <span className="text-[#006c4a]">
+                              Abertura: {match.aberturaPortoes}
+                            </span>
+                          </div>
+                          <p className="font-medium truncate">
+                            {match.estadio} • {match.cidade}
+                          </p>
+                          <p className="text-[10px] text-[#4e5462] truncate">
+                            {match.rodada}
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleOpenMatchPicker(match)}
+                        className={`mt-4 w-full py-3 px-4 rounded-xl text-xs font-extrabold uppercase tracking-wider transition-colors cursor-pointer ${
+                          alreadyGenerated
+                            ? "bg-[#d4f4e4] text-[#005236] hover:bg-[#bef0d7]"
+                            : "bg-[#016294] hover:bg-[#01537e] text-white"
+                        }`}
+                      >
+                        {alreadyGenerated
+                          ? "Ingresso Gerado • Escolher Outro Setor"
+                          : "Escolher Setor e Gerar Ingresso"}
+                      </button>
+                    </article>
+                  );
+                })}
               </div>
             </section>
           </>
@@ -2860,137 +3057,79 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         </div>
       )}
 
-      {/* MODAL 5: Adicionar / Editar Ingresso */}
-      {activeModal === "ingresso" && (
+      {/* MODAL 5: Escolher Setor Oficial e Gerar Ingresso */}
+      {activeModal === "gerar-ingresso" && selectedMatchForTicket && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl my-auto">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-base font-extrabold text-[#131b2e]">
-                Dados do Ingresso
-              </h2>
-              {activeTicket && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    removeTicketAccess(activeTicket.id);
-                    const next = getStoredTickets();
-                    setTickets(next);
-                    populateFormFromTicket(next[0] || null);
-                    setActiveModal(null);
-                  }}
-                  className="text-xs font-bold text-[#93000a] hover:underline cursor-pointer"
-                >
-                  Excluir ingresso
-                </button>
-              )}
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div>
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#016294] bg-[#e6f0f5] px-2.5 py-0.5 rounded-full">
+                  {selectedMatchForTicket.competicao}
+                </span>
+                <h2 className="text-base sm:text-lg font-extrabold text-[#131b2e] mt-1.5">
+                  {selectedMatchForTicket.mandante.nome} x{" "}
+                  {selectedMatchForTicket.visitante.nome}
+                </h2>
+                <p className="text-xs text-[#4e5462] mt-0.5">
+                  {selectedMatchForTicket.dataFormatada} •{" "}
+                  {selectedMatchForTicket.estadio}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveModal(null)}
+                className="text-xs font-bold text-[#4e5462] cursor-pointer"
+              >
+                Fechar
+              </button>
             </div>
 
-            <form onSubmit={handleSaveTicket} className="flex flex-col gap-3">
-              <div className="grid grid-cols-2 gap-3">
-                <input
-                  type="text"
-                  value={competicao}
-                  onChange={(e) => setCompeticao(e.target.value)}
-                  placeholder="Competição"
-                  className="rounded-xl bg-[#f2f3ff] px-3.5 py-2.5 text-xs text-[#131b2e] outline-none"
-                />
-                <input
-                  type="text"
-                  value={temporada}
-                  onChange={(e) => setTemporada(e.target.value)}
-                  placeholder="Ano / Temporada"
-                  className="rounded-xl bg-[#f2f3ff] px-3.5 py-2.5 text-xs text-[#131b2e] outline-none"
-                />
+            <form
+              onSubmit={handleGenerateTicketFromMatch}
+              className="flex flex-col gap-3"
+            >
+              <p className="text-[11px] font-bold uppercase tracking-wider text-[#4e5462]">
+                Selecione o Setor Oficial ({selectedMatchForTicket.estadio})
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-64 overflow-y-auto pr-1">
+                {selectedMatchForTicket.setores.map((sec) => {
+                  const isSelected = selectedSectorId === sec.id;
+                  return (
+                    <button
+                      key={sec.id}
+                      type="button"
+                      onClick={() => setSelectedSectorId(sec.id)}
+                      className={`text-left rounded-2xl p-3 border-2 transition-all cursor-pointer ${
+                        isSelected
+                          ? "border-[#016294] bg-[#e6f0f5]"
+                          : "border-transparent bg-[#f2f3ff] hover:bg-[#e9ecff]"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-extrabold text-[#131b2e]">
+                          {sec.nome}
+                        </span>
+                        <span className="text-[10px] font-extrabold text-[#016294] bg-white px-2 py-0.5 rounded-full shrink-0">
+                          Portão {sec.portao}
+                        </span>
+                      </div>
+                      <p className="text-[10.5px] text-[#4e5462] mt-1">
+                        {sec.subsetor}
+                      </p>
+                      <p className="text-[10px] text-[#016294] font-semibold mt-0.5">
+                        {sec.endereco}
+                      </p>
+                    </button>
+                  );
+                })}
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <input
-                  type="text"
-                  required
-                  value={mandante}
-                  onChange={(e) => setMandante(e.target.value)}
-                  placeholder="Time Mandante *"
-                  className="rounded-xl bg-[#f2f3ff] px-3.5 py-2.5 text-xs text-[#131b2e] outline-none"
-                />
-                <input
-                  type="text"
-                  required
-                  value={visitante}
-                  onChange={(e) => setVisitante(e.target.value)}
-                  placeholder="Time Visitante *"
-                  className="rounded-xl bg-[#f2f3ff] px-3.5 py-2.5 text-xs text-[#131b2e] outline-none"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <input
-                  type="text"
-                  value={dataHorario}
-                  onChange={(e) => setDataHorario(e.target.value)}
-                  placeholder="Data e Horário"
-                  className="rounded-xl bg-[#f2f3ff] px-3.5 py-2.5 text-xs text-[#131b2e] outline-none"
-                />
-                <input
-                  type="text"
-                  value={aberturaPortoes}
-                  onChange={(e) => setAberturaPortoes(e.target.value)}
-                  placeholder="Horário de Abertura"
-                  className="rounded-xl bg-[#f2f3ff] px-3.5 py-2.5 text-xs text-[#131b2e] outline-none"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <input
-                  type="text"
-                  required
-                  value={setor}
-                  onChange={(e) => setSetor(e.target.value)}
-                  placeholder="Setor *"
-                  className="rounded-xl bg-[#f2f3ff] px-3.5 py-2.5 text-xs text-[#131b2e] outline-none"
-                />
-                <input
-                  type="text"
-                  value={subsetor}
-                  onChange={(e) => setSubsetor(e.target.value)}
-                  placeholder="Subsetor / Referência"
-                  className="rounded-xl bg-[#f2f3ff] px-3.5 py-2.5 text-xs text-[#131b2e] outline-none"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <input
-                  type="text"
-                  required
-                  value={portao}
-                  onChange={(e) => setPortao(e.target.value)}
-                  placeholder="Nº do Portão *"
-                  className="rounded-xl bg-[#f2f3ff] px-3.5 py-2.5 text-xs text-[#131b2e] outline-none"
-                />
-                <input
-                  type="text"
-                  value={enderecoPortao}
-                  onChange={(e) => setEnderecoPortao(e.target.value)}
-                  placeholder="Rua / Acesso do Portão"
-                  className="rounded-xl bg-[#f2f3ff] px-3.5 py-2.5 text-xs text-[#131b2e] outline-none"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <input
-                  type="text"
-                  value={tipoAcesso}
-                  onChange={(e) => setTipoAcesso(e.target.value)}
-                  placeholder="Modalidade de Catraca"
-                  className="rounded-xl bg-[#f2f3ff] px-3.5 py-2.5 text-xs text-[#131b2e] outline-none"
-                />
-                <input
-                  type="text"
-                  value={fila}
-                  onChange={(e) => setFila(e.target.value)}
-                  placeholder="Tipo de Fila"
-                  className="rounded-xl bg-[#f2f3ff] px-3.5 py-2.5 text-xs text-[#131b2e] outline-none"
-                />
-              </div>
+              <p className="text-[10.5px] text-[#4e5462] bg-[#f2f3ff] rounded-xl p-3">
+                O portão designado, endereço de acesso e horário de abertura (
+                {selectedMatchForTicket.aberturaPortoes}) são atribuídos
+                automaticamente conforme o mapa oficial do estádio.
+              </p>
 
               <div className="flex justify-end gap-2 pt-2">
                 <button
@@ -3002,9 +3141,9 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 rounded-xl bg-[#016294] text-xs font-extrabold text-white cursor-pointer"
+                  className="px-5 py-2.5 rounded-xl bg-[#016294] hover:bg-[#01537e] text-xs font-extrabold text-white cursor-pointer transition-colors"
                 >
-                  Salvar Ingresso
+                  Gerar Ingresso com Passe Facial
                 </button>
               </div>
             </form>

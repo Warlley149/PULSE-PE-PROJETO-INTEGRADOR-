@@ -33,10 +33,17 @@ export interface BiometricProfile {
 
 export interface TicketAccess {
   id: string;
+  matchId: string;
+  codigoIngresso: string;
   competicao: string;
   temporada: string;
   mandante: string;
+  mandanteSigla: string;
+  mandanteCor: string;
   visitante: string;
+  visitanteSigla: string;
+  visitanteCor: string;
+  estadio: string;
   dataHorario: string;
   aberturaPortoes: string;
   setor: string;
@@ -45,6 +52,7 @@ export interface TicketAccess {
   enderecoPortao: string;
   tipoAcesso: string;
   fila: string;
+  fonte: string;
   createdAt: string;
 }
 
