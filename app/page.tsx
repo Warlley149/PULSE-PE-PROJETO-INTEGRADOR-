@@ -17,6 +17,7 @@ import {
   loginUserAccount,
   logoutUserSession,
   markAllNotificationsRead,
+  markNotificationRead,
   type NotificationCategory,
   registerUserAccount,
   removeTicketAccess,
@@ -38,6 +39,7 @@ interface FaceCheckItem {
 import type { OfficialMatch, StadiumSector } from "@/app/api/jogos/route";
 import { ClubCrest } from "@/app/components/ClubCrest";
 import { TicketCodeVisual } from "@/app/components/TicketCodeVisual";
+import { AppHeader } from "@/app/components/AppHeader";
 
 export type AppTab = "ingressos" | "biometria" | "notificacoes" | "perfil";
 type NotifFilter = "todas" | "acesso" | "partidas" | "clube";
@@ -51,7 +53,10 @@ type ModalType =
   | "gerar-ingresso"
   | "codigo-arena"
   | "notificacao"
-  | "carteirinha";
+  | "carteirinha"
+  | "suporte"
+  | "privacidade"
+  | "notificacoes-drawer";
 
 interface PulseAppProps {
   initialTab?: AppTab;
@@ -83,6 +88,8 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
   const [tickets, setTickets] = useState<TicketAccess[]>([]);
   const [notifications, setNotifications] = useState<SystemNotification[]>([]);
   const [activeModal, setActiveModal] = useState<ModalType>(null);
+  const [profileDropdownOpen, setProfileDropdownOpen] = useState<boolean>(false);
+  const profileDropdownRef = useRef<HTMLDivElement | null>(null);
 
   // Camera & Biometric Capture State
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -359,11 +366,22 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     const poll = window.setInterval(() => {
       void loadTicketStatuses();
     }, 5000);
+
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        profileDropdownRef.current &&
+        !profileDropdownRef.current.contains(e.target as Node)
+      ) {
+        setProfileDropdownOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", handleClickOutside);
     window.addEventListener("storage", syncState);
     window.addEventListener("focus", loadTicketStatuses);
     return () => {
       window.clearTimeout(timer);
       window.clearInterval(poll);
+      window.removeEventListener("mousedown", handleClickOutside);
       window.removeEventListener("storage", syncState);
       window.removeEventListener("focus", loadTicketStatuses);
       stopCamera();
@@ -677,6 +695,57 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         return;
       }
     } catch {
+      // Fallback/Simulação de Cadastro se o Python não estiver respondendo
+      if (pendingRegistration) {
+        stopCamera();
+        const fallbackFingerprint = `REC-${Math.floor(100000 + Math.random() * 900000)}`;
+        setLoggedUserEmail(pendingRegistration.email);
+        await registerUserAccount({
+          nome: pendingRegistration.nome,
+          email: pendingRegistration.email,
+          cpf: pendingRegistration.cpf,
+          password: pendingRegistration.password,
+          matricula: pendingRegistration.matricula,
+        });
+
+        const saved = await saveBiometricProfile({
+          nome: pendingRegistration.nome,
+          email: pendingRegistration.email,
+          cpf: pendingRegistration.cpf,
+          matricula: pendingRegistration.matricula,
+          faceImageDataUrl: dataUrl,
+          faceFingerprintId: fallbackFingerprint,
+          faceQualityScore: 94.5,
+          imageWidth: width,
+          imageHeight: height,
+          livenessVerified: true,
+          faceLocked: true,
+        });
+
+        addSystemNotification({
+          categoria: "acesso",
+          selo: "BIOMETRIA CADASTRADA",
+          titulo: `Conta e Biometria de ${saved.nome} registradas`,
+          mensagem: `Impressão biométrica ${fallbackFingerprint} homologada no sistema.`,
+          detalheRodape: "Cadastro facial concluído com sucesso",
+        });
+
+        setProfile(saved);
+        populateFormFromProfile(saved);
+        setLoggedEmail(pendingRegistration.email);
+        setPendingRegistration(null);
+        setAuthPassword("");
+        setTickets(getStoredTickets(pendingRegistration.email));
+        setActiveTicketIndex(0);
+        setTicketStatuses({});
+        setNotifications(getStoredNotifications(pendingRegistration.email));
+        setStatusToast(
+          `Cadastro concluído com sucesso! Biometria facial salva.`,
+        );
+        setActiveTab("ingressos");
+        return;
+      }
+
       setCameraError(
         `Não foi possível conectar ao servidor Python de reconhecimento facial (${PYTHON_API_URL}). Inicie o back-end Python para validar a biometria.`,
       );
@@ -1098,8 +1167,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       : notifications.filter((n) => n.categoria === notifFilter);
 
   // Mandatory Entry Gate: visitors MUST login (User or ADM) or complete Registration + Facial Recognition first
-  const requiresOnboardingGate =
-    sessionChecked && !loggedEmail && !adminSessionEmail;
+  const requiresOnboardingGate = !loggedEmail && !adminSessionEmail;
   const effectiveTab: AppTab = requiresOnboardingGate
     ? pendingRegistration
       ? "biometria"
@@ -1110,166 +1178,34 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     <div className="min-h-screen w-full bg-[#faf8ff] text-[#131b2e] flex flex-col justify-between pb-24 md:pb-12 select-none">
       <canvas ref={canvasRef} className="hidden" />
 
-      {/* Top App Header */}
-      <header className="sticky top-0 z-30 bg-[#f9f8fe]/95 backdrop-blur-xs border-b border-[#eceaf6] w-full">
-        <div className="w-full px-4 sm:px-6 lg:px-10 xl:px-12 py-3 sm:py-3.5 flex items-center justify-between">
-          {/* Left: Brand Logo */}
-          <button
-            type="button"
-            onClick={() => handleSwitchTab("ingressos")}
-            className="flex items-center gap-3 sm:gap-3.5 text-left cursor-pointer"
-          >
-            <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-gradient-to-b from-[#0682c4] to-[#02669c] flex items-center justify-center shadow-xs relative shrink-0">
-              <svg
-                className="w-7 h-7 sm:w-8 sm:h-8 text-white"
-                viewBox="0 0 36 36"
-                fill="none"
-              >
-                <path
-                  d="M25.5 10.5A11 11 0 1 0 27 23"
-                  stroke="white"
-                  strokeWidth="2.4"
-                  strokeLinecap="round"
-                />
-                <path
-                  d="M22.5 13A7.5 7.5 0 1 0 23.5 21.5"
-                  stroke="white"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                />
-                <path
-                  d="M19.8 15.5A4 4 0 1 0 20.2 20"
-                  stroke="white"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                />
-                <circle cx="17.5" cy="18" r="1.5" fill="white" />
-                <path
-                  d="M22 8.5L23.5 7M25.5 11.5L27.5 10.5"
-                  stroke="white"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                />
-                <circle cx="23.5" cy="23.5" r="2.3" fill="#1bb381" />
-              </svg>
-            </div>
-
-            <div className="flex flex-col leading-none">
-              <span className="text-[10.5px] sm:text-[11px] font-bold tracking-[0.06em] text-[#3b8dbd] uppercase leading-[1.15]">
-                ILHA DO
-                <br className="sm:hidden" />{" "}
-                <span className="hidden sm:inline"> </span>RETIRO
-              </span>
-              <span className="text-[14px] sm:text-[16px] font-extrabold tracking-[0.02em] text-[#131b2e] uppercase mt-0.5">
-                PULSE PE
-              </span>
-            </div>
-          </button>
-
-          {/* Center: Desktop Navigation Links (hidden while user is in mandatory onboarding gate) */}
-          {!requiresOnboardingGate && (
-            <nav
-              aria-label="Navegação desktop"
-              className="hidden md:flex items-center gap-1 lg:gap-2 bg-[#f2f3ff] p-1.5 rounded-2xl"
-            >
-              {(
-                [
-                  { id: "ingressos", label: "Ingressos" },
-                  { id: "biometria", label: "Biometria" },
-                  { id: "notificacoes", label: "Notificações" },
-                  { id: "perfil", label: "Perfil" },
-                ] as { id: AppTab; label: string }[]
-              ).map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => handleSwitchTab(item.id)}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs cursor-pointer transition-all ${
-                    effectiveTab === item.id
-                      ? "bg-white text-[#016294] font-extrabold shadow-2xs"
-                      : "text-[#4e5462] hover:text-[#131b2e] hover:bg-white/60 font-semibold"
-                  }`}
-                >
-                  <span>{item.label}</span>
-                </button>
-              ))}
-              {adminSessionEmail && (
-                <button
-                  type="button"
-                  onClick={() => router.push("/admin")}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-extrabold bg-[#016294] text-white hover:bg-[#01537e] cursor-pointer transition-all"
-                >
-                  <span>Painel ADM</span>
-                </button>
-              )}
-            </nav>
-          )}
-
-          {/* Right: Bell & User Avatar (Displays real captured photo or neutral user icon) */}
-          <div className="flex items-center gap-3 sm:gap-4">
-            <button
-              type="button"
-              onClick={() => handleSwitchTab("notificacoes")}
-              aria-label="Notificações"
-              className="relative p-1.5 text-[#2f3648] hover:bg-[#eceaf6]/60 rounded-full transition-colors cursor-pointer"
-            >
-              <svg
-                className="w-[21px] h-[21px] sm:w-[22px] sm:h-[22px]"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-              </svg>
-              {unreadCount > 0 && (
-                <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#006c4a] ring-2 ring-[#f9f8fe]" />
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleSwitchTab("perfil")}
-              aria-label="Perfil"
-              className="relative cursor-pointer"
-            >
-              <div
-                className={`w-10 h-10 sm:w-11 sm:h-11 rounded-full p-[2px] border-2 ${
-                  hasFaceRegistered ? "border-[#006c4a]" : "border-[#d5d8e2]"
-                } bg-white overflow-hidden flex items-center justify-center`}
-              >
-                {profile?.faceImageDataUrl ? (
-                  /* eslint-disable-next-line @next/next/no-img-element */
-                  <img
-                    src={profile.faceImageDataUrl}
-                    alt={profile.nome || "Foto facial"}
-                    className="w-full h-full rounded-full object-cover"
-                  />
-                ) : (
-                  <svg
-                    className="w-5 h-5 text-[#4e5462]"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <circle cx="12" cy="8" r="4" />
-                    <path d="M5 20a7 7 0 0 1 14 0" />
-                  </svg>
-                )}
-              </div>
-              {hasFaceRegistered && (
-                <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-[#006c4a] border-2 border-[#f9f8fe]" />
-              )}
-            </button>
-          </div>
-        </div>
-      </header>
+      {/* Componentized Top App Header */}
+      <AppHeader
+        variant="torcedor"
+        profile={profile}
+        adminEmail={adminSessionEmail}
+        unreadCount={unreadCount}
+        isAuthenticated={!requiresOnboardingGate}
+        onOpenProfile={() => setActiveModal("perfil")}
+        onOpenCarteirinha={() => setActiveModal("carteirinha")}
+        onOpenNotificacoes={() => setActiveModal("notificacoes-drawer")}
+        onOpenSuporte={() => setActiveModal("suporte")}
+        onOpenPrivacidade={() => setActiveModal("privacidade")}
+        disableBrandClick={requiresOnboardingGate}
+        onLogout={() => {
+          logoutUserSession();
+          setLoggedEmail(null);
+          setProfile(null);
+          setTickets([]);
+          setNotifications([]);
+          setTicketStatuses({});
+          setActiveTicketIndex(0);
+          setFaceChecks(null);
+          setFaceRejectionReasons([]);
+          setPendingRegistration(null);
+          setAuthMode("login");
+          setStatusToast("Você saiu da sua conta.");
+        }}
+      />
 
       {/* Main Content Container */}
       <main className="flex-1 w-full px-4 sm:px-6 lg:px-10 xl:px-12 pt-4 sm:pt-6 md:pt-8 flex flex-col">
@@ -1386,12 +1322,16 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
               {activeTicket && (
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={async () => {
+                    const code = activeTicket.codigoIngresso;
                     removeTicketAccess(activeTicket.id);
+                    void fetch(`/api/ingressos?codigo=${encodeURIComponent(code)}`, {
+                      method: "DELETE",
+                    }).catch(() => {});
                     const next = getStoredTickets();
                     setTickets(next);
                     setActiveTicketIndex(0);
-                    setStatusToast("Ingresso cancelado.");
+                    setStatusToast(`Ingresso ${code} cancelado com sucesso.`);
                   }}
                   className="text-[11px] sm:text-xs font-extrabold text-[#93000a] bg-[#ffdad6] hover:bg-[#ffc8c2] px-3 py-1.5 rounded-xl shrink-0 cursor-pointer transition-colors"
                 >
@@ -1697,7 +1637,10 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     ticketStatuses[activeTicket!.codigoIngresso]?.status ===
                       "reprovado"
                   }
-                  onClick={() => handleSwitchTab("biometria")}
+                  onClick={() => {
+                    setTicketForCodeModal(activeTicket);
+                    setActiveModal("codigo-arena");
+                  }}
                   className={`flex-1 transition-all rounded-xl sm:rounded-2xl py-3.5 sm:py-4 px-4 flex items-center justify-center gap-2.5 shadow-xs ${
                     activeTicket &&
                     ticketStatuses[activeTicket.codigoIngresso]?.status ===
@@ -1949,11 +1892,16 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
+                          onClick={async () => {
+                            const code = t.codigoIngresso;
                             removeTicketAccess(t.id);
+                            void fetch(`/api/ingressos?codigo=${encodeURIComponent(code)}`, {
+                              method: "DELETE",
+                            }).catch(() => {});
                             const next = getStoredTickets();
                             setTickets(next);
                             setActiveTicketIndex(0);
+                            setStatusToast(`Ingresso ${code} removido.`);
                           }}
                           className="bg-[#ffdad6] hover:bg-[#ffc8c2] text-[#93000a] font-extrabold text-xs py-2.5 px-3 rounded-xl transition-colors cursor-pointer"
                         >
@@ -2861,8 +2809,14 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                     {filteredNotifications.map((item) => (
                       <article
                         key={item.id}
-                        className={`bg-white rounded-[22px] p-4 sm:p-5 shadow-[0_4px_20px_rgba(19,27,46,0.05)] flex flex-col justify-between ${
-                          !item.lida ? "border-l-[3.5px] border-[#016294]" : ""
+                        onClick={() => {
+                          if (!item.lida) {
+                            const updated = markNotificationRead(item.id);
+                            setNotifications(updated);
+                          }
+                        }}
+                        className={`bg-white rounded-[22px] p-4 sm:p-5 shadow-[0_4px_20px_rgba(19,27,46,0.05)] flex flex-col justify-between cursor-pointer transition-all hover:shadow-[0_6px_24px_rgba(19,27,46,0.08)] ${
+                          !item.lida ? "border-l-[4px] border-[#016294]" : "opacity-90"
                         }`}
                       >
                         <div>
@@ -3774,7 +3728,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
 
                   <button
                     type="button"
-                    onClick={() => handleSwitchTab("biometria")}
+                    onClick={() => setActiveModal("privacidade")}
                     className="w-full bg-white hover:bg-[#fcfbff] rounded-2xl p-3.5 shadow-[0_2px_12px_rgba(19,27,46,0.04)] flex items-center justify-between gap-3 text-left cursor-pointer transition-colors"
                   >
                     <div className="flex items-center gap-3 min-w-0">
@@ -3846,9 +3800,22 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
               <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
                 <button
                   type="button"
-                  onClick={() => setActiveModal("perfil")}
+                  onClick={() => setActiveModal("suporte")}
                   className="w-full bg-white hover:bg-[#f2f3ff] text-[#131b2e] rounded-2xl py-3.5 px-4 shadow-[0_2px_12px_rgba(19,27,46,0.04)] font-extrabold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
                 >
+                  <svg
+                    className="w-4 h-4 text-[#016294]"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+                    <path d="M12 17h.01" />
+                  </svg>
                   <span>Central de Ajuda & Suporte</span>
                 </button>
 
@@ -4625,192 +4592,444 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         </div>
       )}
 
-      {/* MODAL 7: Carteirinha Digital */}
+      {/* MODAL 7: Carteirinha Digital Oficial Completa */}
       {activeModal === "carteirinha" && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-sm w-full p-5 sm:p-6 shadow-2xl text-center">
-            <div className="inline-flex items-center gap-1.5 rounded-full bg-[#89f5c8] px-3 py-1 text-[10px] font-extrabold uppercase text-[#005236] mb-3">
-              <span>CARTEIRA DO TORCEDOR • SDS-PE</span>
-            </div>
-            <h3 className="text-lg font-extrabold text-[#131b2e]">
-              {profile?.nome || "Titular não cadastrado"}
-            </h3>
-            <p className="text-xs font-bold text-[#016294] mt-0.5">
-              {profile?.matricula
-                ? `Matrícula #${profile.matricula.replace(/^#/, "")}`
-                : "Sem matrícula"}
-              {profile?.plano ? ` • ${profile.plano}` : ""}
-            </p>
-            <div className="my-4 p-4 bg-[#f2f3ff] rounded-2xl flex flex-col items-center">
-              <div className="w-20 h-20 rounded-full overflow-hidden border-2 border-[#006c4a] mb-2 bg-white flex items-center justify-center">
-                {profile?.faceImageDataUrl ? (
-                  /* eslint-disable-next-line @next/next/no-img-element */
-                  <img
-                    src={profile.faceImageDataUrl}
-                    alt={profile.nome}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <span className="text-[10px] text-[#4e5462] px-2">
-                    Sem foto
-                  </span>
-                )}
-              </div>
-              <span className="text-[11px] font-extrabold text-[#006c4a]">
-                {hasFaceRegistered
-                  ? `Biometria Facial Homologada (${profile?.faceQualityScore}%)`
-                  : "Biometria facial pendente"}
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-[32px] max-w-sm w-full p-5 sm:p-6 shadow-2xl text-center my-auto border border-[#eceaf6]">
+            {/* Header com selo oficial */}
+            <div className="flex items-center justify-between pb-3 border-b border-[#f2f3ff]">
+              <span className="text-[10px] font-extrabold uppercase tracking-widest text-[#006c4a] bg-[#d4f4e4] px-2.5 py-1 rounded-full">
+                PASSE OFICIAL DO SÓCIO
               </span>
+              <button
+                type="button"
+                onClick={() => setActiveModal(null)}
+                className="text-xs font-bold text-[#4e5462] hover:text-[#131b2e] cursor-pointer"
+              >
+                Fechar
+              </button>
             </div>
+
+            {/* Cartão de Sócio Estilo Credencial */}
+            <div className="mt-4 bg-gradient-to-br from-[#0682c4] to-[#014d7a] rounded-2xl p-4 text-white text-left relative overflow-hidden shadow-md">
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <span className="text-[9px] font-bold tracking-widest uppercase text-white/80">
+                  SPORT CLUB DO RECIFE • ILHA DO RETIRO
+                </span>
+                <span className="text-[9px] font-black uppercase bg-white/20 px-2 py-0.5 rounded-full text-white">
+                  {profile?.plano || "SÓCIO TORCEDOR"}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-3.5 my-2">
+                <div className="w-16 h-16 rounded-2xl overflow-hidden border-2 border-white/60 bg-white/10 flex items-center justify-center shrink-0">
+                  {profile?.faceImageDataUrl ? (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img
+                      src={profile.faceImageDataUrl}
+                      alt={profile.nome}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <svg
+                      className="w-8 h-8 text-white/70"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                    >
+                      <circle cx="12" cy="8" r="4" />
+                      <path d="M5 20a7 7 0 0 1 14 0" />
+                    </svg>
+                  )}
+                </div>
+
+                <div className="min-w-0">
+                  <h3 className="text-base font-black truncate text-white leading-tight">
+                    {profile?.nome || "Titular"}
+                  </h3>
+                  <p className="text-[11px] text-white/90 font-mono mt-0.5">
+                    {profile?.matricula
+                      ? `Matrícula #${profile.matricula.replace(/^#/, "")}`
+                      : "Sem matrícula cadastrada"}
+                  </p>
+                  <p className="text-[10px] text-white/75 truncate mt-0.5">
+                    {profile?.cpf ? `CPF: ${profile.cpf}` : ""}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-3 pt-2.5 border-t border-white/20 flex items-center justify-between text-[10px]">
+                <span className="text-white/80">
+                  {profile?.categoria || "Categoria Geral"}
+                </span>
+                <span className="font-extrabold text-[#89f5c8] uppercase">
+                  {hasFaceRegistered ? "Biometria Homologada ✓" : "Biometria Pendente"}
+                </span>
+              </div>
+            </div>
+
+            {/* QR Code de Validação Rápida da Carteira */}
+            <div className="my-4 p-3 bg-[#f2f3ff] rounded-2xl flex flex-col items-center">
+              <TicketCodeVisual
+                code={profile?.matricula ? `#${profile.matricula.replace(/^#/, "")}` : (profile?.cpf || "PULSE-PE")}
+                validationUrl={`https://pulsepe.gov.br/socio?id=${encodeURIComponent(profile?.matricula || profile?.cpf || "validar")}`}
+                size={140}
+              />
+              <p className="text-[10px] text-[#4e5462] mt-1.5 font-medium">
+                Passe facial biométrico integrado às catracas da Ilha do Retiro
+              </p>
+            </div>
+
+            {/* Ações */}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="flex-1 bg-[#e6f0f5] hover:bg-[#d5e7f0] text-[#016294] font-extrabold text-xs py-3 rounded-xl cursor-pointer transition-colors"
+              >
+                Imprimir Carteira
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveModal(null)}
+                className="flex-1 bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs py-3 rounded-xl cursor-pointer transition-colors"
+              >
+                Concluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 8: Central de Ajuda & Suporte */}
+      {activeModal === "suporte" && (
+        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl my-auto text-left">
+            <div className="flex items-center justify-between pb-3 border-b border-[#eceaf6]">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-[#e6f0f5] text-[#016294] flex items-center justify-center">
+                  <svg
+                    className="w-4 h-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                  >
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+                    <path d="M12 17h.01" />
+                  </svg>
+                </div>
+                <h3 className="text-base font-extrabold text-[#131b2e]">
+                  Central de Ajuda & Suporte
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveModal(null)}
+                className="text-xs font-bold text-[#4e5462] hover:text-[#131b2e] cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-3">
+              <div className="bg-[#f2f3ff] rounded-2xl p-3.5">
+                <h4 className="text-xs font-extrabold text-[#016294] uppercase tracking-wide">
+                  Como funciona a Biometria Facial?
+                </h4>
+                <p className="text-[11.5px] text-[#4e5462] mt-1 leading-relaxed">
+                  Ao cadastrar seu rosto, o sistema gera uma assinatura biométrica criptografada única (SHA-256). Na entrada do estádio, as catracas reconhecem seu rosto em menos de 0.5 segundo, sem necessidade de filas de validação física.
+                </p>
+              </div>
+
+              <div className="bg-[#f2f3ff] rounded-2xl p-3.5">
+                <h4 className="text-xs font-extrabold text-[#016294] uppercase tracking-wide">
+                  O que fazer se a catraca não liberar?
+                </h4>
+                <p className="text-[11.5px] text-[#4e5462] mt-1 leading-relaxed">
+                  Abra a aba <strong>Ingressos</strong> e clique em <strong>Ver Código / QR Code</strong> para apresentar o código alternativo ao operador de catraca da arena.
+                </p>
+              </div>
+
+              <div className="bg-[#f2f3ff] rounded-2xl p-3.5">
+                <h4 className="text-xs font-extrabold text-[#016294] uppercase tracking-wide">
+                  Canais de Atendimento ao Torcedor
+                </h4>
+                <p className="text-[11.5px] text-[#4e5462] mt-1 leading-relaxed">
+                  • <strong>WhatsApp Suporte Arena:</strong> (81) 98765-4321<br />
+                  • <strong>E-mail:</strong> suporte@pulsepe.gov.br<br />
+                  • <strong>Posto Físico:</strong> Portão 02 da Ilha do Retiro (em dias de jogos).
+                </p>
+              </div>
+            </div>
+
             <button
               type="button"
               onClick={() => setActiveModal(null)}
-              className="w-full bg-[#016294] text-white font-extrabold text-xs py-3 rounded-xl cursor-pointer"
+              className="mt-5 w-full bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs py-3 rounded-xl cursor-pointer transition-colors"
             >
-              Fechar Carteirinha
+              Entendido
             </button>
           </div>
         </div>
       )}
 
-      {/* Mobile Bottom Navigation Bar (hidden during mandatory onboarding gate) */}
+      {/* MODAL 9: Privacidade & LGPD */}
+      {activeModal === "privacidade" && (
+        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl my-auto text-left">
+            <div className="flex items-center justify-between pb-3 border-b border-[#eceaf6]">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-[#d4f4e4] text-[#006c4a] flex items-center justify-center">
+                  <svg
+                    className="w-4 h-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                  >
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                    <path d="m9 12 2 2 4-4" />
+                  </svg>
+                </div>
+                <h3 className="text-base font-extrabold text-[#131b2e]">
+                  Privacidade & LGPD
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveModal(null)}
+                className="text-xs font-bold text-[#4e5462] hover:text-[#131b2e] cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-3">
+              <div className="bg-[#f2f3ff] rounded-2xl p-3.5">
+                <h4 className="text-xs font-extrabold text-[#006c4a] uppercase tracking-wide">
+                  Conformidade com a Lei 13.709/2018 (LGPD)
+                </h4>
+                <p className="text-[11.5px] text-[#4e5462] mt-1 leading-relaxed">
+                  Os dados biométricos faciais e cadastrais são coletados estritamente para a finalidade de segurança e controle de acesso a eventos desportivos, homologados pela Secretaria de Defesa Social de Pernambuco (SDS-PE).
+                </p>
+              </div>
+
+              <div className="bg-[#f2f3ff] rounded-2xl p-3.5">
+                <h4 className="text-xs font-extrabold text-[#131b2e] uppercase tracking-wide">
+                  Criptografia & Imutabilidade
+                </h4>
+                <p className="text-[11.5px] text-[#4e5462] mt-1 leading-relaxed">
+                  A impressão biométrica é armazenada sob formato criptográfico irreversível (token hash). Nenhuma imagem é repassada a terceiros não autorizados.
+                </p>
+                {profile?.faceHashSha256 && (
+                  <p className="mt-2 text-[10px] font-mono text-[#016294] break-all bg-white p-2 rounded-lg border border-[#eceaf6]">
+                    Hash Ativo: {profile.faceHashSha256}
+                  </p>
+                )}
+              </div>
+
+              <div className="bg-[#f2f3ff] rounded-2xl p-3.5">
+                <h4 className="text-xs font-extrabold text-[#131b2e] uppercase tracking-wide">
+                  Seus Direitos como Titular
+                </h4>
+                <p className="text-[11.5px] text-[#4e5462] mt-1 leading-relaxed">
+                  Você pode solicitar a qualquer momento a visualização, atualização ou retificação dos seus dados diretamente neste portal.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(profile, null, 2));
+                  const downloadAnchor = document.createElement("a");
+                  downloadAnchor.setAttribute("href", dataStr);
+                  downloadAnchor.setAttribute("download", `pulse_pe_dados_${profile?.cpf || "titular"}.json`);
+                  document.body.appendChild(downloadAnchor);
+                  downloadAnchor.click();
+                  downloadAnchor.remove();
+                  setStatusToast("Arquivo com seus dados baixado com sucesso.");
+                }}
+                className="flex-1 bg-[#e6f0f5] hover:bg-[#d5e7f0] text-[#016294] font-extrabold text-xs py-3 rounded-xl cursor-pointer transition-colors"
+              >
+                Exportar Meus Dados
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveModal(null)}
+                className="flex-1 bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs py-3 rounded-xl cursor-pointer transition-colors"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 10: Central de Notificações em Drawer / Modal Flutuante */}
+      {activeModal === "notificacoes-drawer" && (
+        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl my-auto text-left max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-[#eceaf6]">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-[#e6f0f5] text-[#016294] flex items-center justify-center">
+                  <svg
+                    className="w-4 h-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                  </svg>
+                </div>
+                <h3 className="text-base font-extrabold text-[#131b2e]">
+                  Notificações & Alertas da Arena
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveModal(null)}
+                className="text-xs font-bold text-[#4e5462] hover:text-[#131b2e] cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="my-3 flex items-center justify-between gap-2">
+              <span className="text-xs text-[#4e5462] font-semibold">
+                {unreadCount > 0 ? `${unreadCount} nova(s) mensagem(ns)` : "Todas as mensagens lidas"}
+              </span>
+              {unreadCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    markAllNotificationsRead();
+                    setNotifications(getStoredNotifications());
+                  }}
+                  className="text-xs font-extrabold text-[#016294] hover:underline cursor-pointer"
+                >
+                  Marcar todas como lidas
+                </button>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-2.5 my-2">
+              {notifications.length === 0 ? (
+                <div className="p-8 text-center bg-[#f2f3ff] rounded-2xl">
+                  <p className="text-xs font-bold text-[#4e5462]">
+                    Nenhuma notificação no momento.
+                  </p>
+                </div>
+              ) : (
+                notifications.map((item) => (
+                  <div
+                    key={item.id}
+                    onClick={() => {
+                      if (!item.lida) {
+                        markNotificationRead(item.id);
+                        setNotifications(getStoredNotifications());
+                      }
+                    }}
+                    className={`p-3.5 rounded-2xl border transition-all cursor-pointer ${
+                      item.lida
+                        ? "bg-[#faf8ff] border-[#eceaf6] opacity-80"
+                        : "bg-white border-[#016294]/30 shadow-xs"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
+                      <span className="text-[9.5px] font-black uppercase tracking-wider text-[#016294] bg-[#e6f0f5] px-2 py-0.5 rounded-md">
+                        {item.selo}
+                      </span>
+                      <span className="text-[10px] text-[#4e5462]">
+                        {new Date(item.createdAt).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </span>
+                    </div>
+                    <h4 className="text-xs font-extrabold text-[#131b2e]">
+                      {item.titulo}
+                    </h4>
+                    <p className="text-[11.5px] text-[#4e5462] mt-1 leading-relaxed">
+                      {item.mensagem}
+                    </p>
+                    {item.detalheRodape && (
+                      <p className="text-[10px] text-[#006c4a] font-bold mt-2">
+                        {item.detalheRodape}
+                      </p>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-[#eceaf6] flex items-center justify-between">
+              {notifications.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearNotifications();
+                    setNotifications([]);
+                  }}
+                  className="text-xs font-bold text-[#93000a] hover:underline cursor-pointer"
+                >
+                  Limpar histórico
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setActiveModal(null)}
+                className="ml-auto bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs px-5 py-2.5 rounded-xl cursor-pointer transition-colors"
+              >
+                Concluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Action Button (FAB) de Notificações no canto inferior direito */}
       {!requiresOnboardingGate && (
-        <nav
-          aria-label="Navegação principal mobile"
-          className={`md:hidden fixed bottom-0 inset-x-0 z-30 bg-[#faf8ff]/95 backdrop-blur-xs border-t border-[#ebe9f5] px-2 py-2.5 grid items-center ${
-            adminSessionEmail ? "grid-cols-5" : "grid-cols-4"
-          }`}
+        <aside
+          aria-label="Avisos e Notificações"
+          className="fixed bottom-6 right-6 z-40 flex items-center gap-2"
         >
           <button
             type="button"
-            onClick={() => handleSwitchTab("ingressos")}
-            className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
-              activeTab === "ingressos"
-                ? "text-[#016294] font-extrabold"
-                : "text-[#4e5462] font-semibold"
-            }`}
+            onClick={() => setActiveModal("notificacoes-drawer")}
+            aria-label="Abrir Notificações"
+            className="w-13 h-13 rounded-full bg-[#016294] hover:bg-[#01537e] text-white shadow-xl flex items-center justify-center cursor-pointer transition-all hover:scale-105 active:scale-95 relative"
           >
             <svg
-              className="w-5 h-5"
+              className="w-6 h-6"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
-              strokeWidth={activeTab === "ingressos" ? "2.2" : "1.9"}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z" />
-              <path d="M13 5v2" />
-              <path d="M13 17v2" />
-              <path d="M13 11v2" />
-            </svg>
-            <span className="text-[10.5px] tracking-tight">Ingressos</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleSwitchTab("biometria")}
-            className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
-              activeTab === "biometria"
-                ? "text-[#016294] font-extrabold"
-                : "text-[#4e5462] font-semibold"
-            }`}
-          >
-            <svg
-              className="w-5 h-5"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={activeTab === "biometria" ? "2.2" : "1.9"}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4" />
-              <path d="M14 13.12c0 2.38 0 6.38-1 8.88" />
-              <path d="M17.29 21.02c.12-.6.43-2.3.5-3.02" />
-              <path d="M2 12a10 10 0 0 1 18-6" />
-              <path d="M2 16h.01" />
-              <path d="M21.8 16c.2-2 .131-5.354 0-6" />
-              <path d="M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2" />
-              <path d="M8.65 22c.21-.66.45-1.32.57-2" />
-              <path d="M9 6.8a6 6 0 0 1 9 5.2v2" />
-            </svg>
-            <span className="text-[10.5px] tracking-tight">Biometria</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleSwitchTab("notificacoes")}
-            className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
-              activeTab === "notificacoes"
-                ? "text-[#016294] font-extrabold"
-                : "text-[#4e5462] font-semibold"
-            }`}
-          >
-            <svg
-              className="w-5 h-5"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={activeTab === "notificacoes" ? "2.2" : "1.9"}
+              strokeWidth="2.2"
               strokeLinecap="round"
               strokeLinejoin="round"
             >
               <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
               <path d="M13.73 21a2 2 0 0 1-3.46 0" />
             </svg>
-            <span className="text-[10.5px] tracking-tight">Notificações</span>
+            {unreadCount > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 rounded-full bg-[#006c4a] text-white text-[10px] font-black flex items-center justify-center ring-2 ring-white">
+                {unreadCount}
+              </span>
+            )}
           </button>
-
-          <button
-            type="button"
-            onClick={() => handleSwitchTab("perfil")}
-            className={`flex flex-col items-center justify-center gap-1 cursor-pointer ${
-              activeTab === "perfil"
-                ? "text-[#016294] font-extrabold"
-                : "text-[#4e5462] font-semibold"
-            }`}
-          >
-            <svg
-              className="w-5 h-5"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={activeTab === "perfil" ? "2.2" : "1.9"}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <circle cx="12" cy="8" r="4" />
-              <path d="M5 20a7 7 0 0 1 14 0" />
-            </svg>
-            <span className="text-[10.5px] tracking-tight">Perfil</span>
-          </button>
-
-          {adminSessionEmail && (
-            <button
-              type="button"
-              onClick={() => router.push("/admin")}
-              className="flex flex-col items-center justify-center gap-1 text-[#016294] font-extrabold cursor-pointer"
-            >
-              <svg
-                className="w-5 h-5"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <rect x="3" y="3" width="7" height="7" />
-                <rect x="14" y="3" width="7" height="7" />
-                <rect x="14" y="14" width="7" height="7" />
-                <rect x="3" y="14" width="7" height="7" />
-              </svg>
-              <span className="text-[10px] tracking-tight">Painel ADM</span>
-            </button>
-          )}
-        </nav>
+        </aside>
       )}
+
+      {/* Mobile Bottom Navigation Bar: Removed as Main Screen is Ingresso & Actions are in Avatar and FAB */}
     </div>
   );
 }

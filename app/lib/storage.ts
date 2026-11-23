@@ -414,6 +414,19 @@ export function addSystemNotification(input: {
   return item;
 }
 
+export function markNotificationRead(id: string): SystemNotification[] {
+  const list = getStoredNotifications().map((n) =>
+    n.id === id ? { ...n, lida: true } : n,
+  );
+  if (typeof window !== "undefined") {
+    const key = getNotificationsStorageKey();
+    if (key) {
+      window.localStorage.setItem(key, JSON.stringify(list));
+    }
+  }
+  return list;
+}
+
 export function markAllNotificationsRead(): SystemNotification[] {
   const list = getStoredNotifications().map((n) => ({ ...n, lida: true }));
   if (typeof window !== "undefined") {

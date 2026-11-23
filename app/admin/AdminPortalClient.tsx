@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { AppHeader } from "@/app/components/AppHeader";
 import type {
   ServerTicketRecord,
   TicketValidationStatus,
@@ -530,71 +531,19 @@ export function AdminPortalClient({
 
   return (
     <div className="min-h-screen w-full bg-[#faf8ff] text-[#131b2e] flex flex-col pb-24 md:pb-12">
-      {/* Unified Header with Same Navigation Bar as User App */}
-      <header className="sticky top-0 z-30 bg-[#f9f8fe]/95 backdrop-blur-xs border-b border-[#eceaf6] w-full">
-        <div className="w-full px-4 sm:px-6 lg:px-10 xl:px-12 py-3 sm:py-3.5 flex items-center justify-between gap-3">
-          <Link href="/" className="flex items-center gap-3 shrink-0">
-            <div className="w-11 h-11 rounded-2xl bg-gradient-to-b from-[#0682c4] to-[#02669c] flex items-center justify-center text-white font-extrabold text-xs shadow-xs">
-              ADM
-            </div>
-            <div className="flex flex-col leading-none">
-              <span className="text-[10px] font-bold tracking-[0.06em] text-[#006c4a] uppercase">
-                ILHA DO RETIRO • ADM
-              </span>
-              <span className="text-sm sm:text-base font-extrabold text-[#131b2e] uppercase mt-0.5">
-                PULSE PE
-              </span>
-            </div>
-          </Link>
-
-          {/* Same Desktop Navigation Bar as User App */}
-          <nav
-            aria-label="Navegação principal"
-            className="hidden md:flex items-center gap-1 lg:gap-2 bg-[#f2f3ff] p-1.5 rounded-2xl"
-          >
-            <Link
-              href="/"
-              className="px-4 py-2 rounded-xl text-xs font-semibold text-[#4e5462] hover:text-[#131b2e] hover:bg-white/60 transition-all"
-            >
-              Ingressos
-            </Link>
-            <Link
-              href="/biometria"
-              className="px-4 py-2 rounded-xl text-xs font-semibold text-[#4e5462] hover:text-[#131b2e] hover:bg-white/60 transition-all"
-            >
-              Biometria
-            </Link>
-            <Link
-              href="/?tab=notificacoes"
-              className="px-4 py-2 rounded-xl text-xs font-semibold text-[#4e5462] hover:text-[#131b2e] hover:bg-white/60 transition-all"
-            >
-              Notificações
-            </Link>
-            <Link
-              href="/?tab=perfil"
-              className="px-4 py-2 rounded-xl text-xs font-semibold text-[#4e5462] hover:text-[#131b2e] hover:bg-white/60 transition-all"
-            >
-              Perfil
-            </Link>
-            <span className="px-4 py-2 rounded-xl text-xs font-extrabold bg-white text-[#016294] shadow-2xs">
-              Painel ADM
-            </span>
-          </nav>
-
-          <div className="flex items-center gap-2.5">
-            <span className="hidden xl:inline text-[11px] font-bold text-[#4e5462]">
-              {adminEmail}
-            </span>
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="text-xs font-extrabold text-[#93000a] bg-[#ffdad6] hover:bg-[#ffc8c2] px-3.5 py-2 rounded-xl cursor-pointer transition-colors"
-            >
-              Sair (ADM)
-            </button>
-          </div>
-        </div>
-      </header>
+      {/* Componentized Header */}
+      <AppHeader
+        variant="admin"
+        adminEmail={adminEmail}
+        unreadCount={pendingCount}
+        onOpenNotificacoes={() => {
+          setActionMessage({
+            type: "success",
+            text: `Existem ${pendingCount} bilhete(s) aguardando validação na catraca.`,
+          });
+        }}
+        onLogout={handleLogout}
+      />
 
       <main className="flex-1 w-full px-4 sm:px-6 lg:px-10 xl:px-12 pt-6 flex flex-col gap-6">
         {/* KPI Counters */}
@@ -1252,39 +1201,7 @@ export function AdminPortalClient({
         </div>
       )}
 
-      {/* Mobile Bottom Navigation Bar (Matching User App) */}
-      <nav
-        aria-label="Navegação mobile ADM"
-        className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-[#faf8ff]/95 backdrop-blur-xs border-t border-[#ebe9f5] px-2 py-2.5 grid grid-cols-5 items-center text-center"
-      >
-        <Link
-          href="/"
-          className="text-[10px] font-semibold text-[#4e5462] hover:text-[#131b2e]"
-        >
-          Ingressos
-        </Link>
-        <Link
-          href="/biometria"
-          className="text-[10px] font-semibold text-[#4e5462] hover:text-[#131b2e]"
-        >
-          Biometria
-        </Link>
-        <Link
-          href="/?tab=notificacoes"
-          className="text-[10px] font-semibold text-[#4e5462] hover:text-[#131b2e]"
-        >
-          Avisos
-        </Link>
-        <Link
-          href="/?tab=perfil"
-          className="text-[10px] font-semibold text-[#4e5462] hover:text-[#131b2e]"
-        >
-          Perfil
-        </Link>
-        <span className="text-[10px] font-extrabold text-[#016294]">
-          Painel ADM
-        </span>
-      </nav>
+      {/* Mobile Bottom Navigation Bar removed from ADM panel */}
     </div>
   );
 }
