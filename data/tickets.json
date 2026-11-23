@@ -13,8 +13,10 @@
     "titular": "Warlley dos Santos Tenório",
     "cpf": "123.456.789-00",
     "biometriaOk": true,
-    "status": "pendente",
-    "createdAt": "2026-11-20T17:04:23.161Z"
+    "createdAt": "2026-11-20T17:04:23.161Z",
+    "status": "aprovado",
+    "reviewedAt": "2026-11-23T00:20:16.917Z",
+    "reviewedBy": "admin@pulsepe.gov.br"
   },
   {
     "codigo": "PE-416170",
