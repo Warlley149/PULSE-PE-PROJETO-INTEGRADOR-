@@ -28,8 +28,9 @@ import {
   type TicketAccess,
 } from "@/app/lib/storage";
 
-const PYTHON_API_URL =
-  process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://127.0.0.1:8000";
+const PYTHON_API_URL = (
+  process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://127.0.0.1:8000"
+).replace(/\/+$/, "");
 
 interface FaceCheckItem {
   ok: boolean;
@@ -88,7 +89,8 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
   const [tickets, setTickets] = useState<TicketAccess[]>([]);
   const [notifications, setNotifications] = useState<SystemNotification[]>([]);
   const [activeModal, setActiveModal] = useState<ModalType>(null);
-  const [profileDropdownOpen, setProfileDropdownOpen] = useState<boolean>(false);
+  const [profileDropdownOpen, setProfileDropdownOpen] =
+    useState<boolean>(false);
   const profileDropdownRef = useRef<HTMLDivElement | null>(null);
 
   // Camera & Biometric Capture State
@@ -1325,9 +1327,12 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                   onClick={async () => {
                     const code = activeTicket.codigoIngresso;
                     removeTicketAccess(activeTicket.id);
-                    void fetch(`/api/ingressos?codigo=${encodeURIComponent(code)}`, {
-                      method: "DELETE",
-                    }).catch(() => {});
+                    void fetch(
+                      `/api/ingressos?codigo=${encodeURIComponent(code)}`,
+                      {
+                        method: "DELETE",
+                      },
+                    ).catch(() => {});
                     const next = getStoredTickets();
                     setTickets(next);
                     setActiveTicketIndex(0);
@@ -1895,9 +1900,12 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                           onClick={async () => {
                             const code = t.codigoIngresso;
                             removeTicketAccess(t.id);
-                            void fetch(`/api/ingressos?codigo=${encodeURIComponent(code)}`, {
-                              method: "DELETE",
-                            }).catch(() => {});
+                            void fetch(
+                              `/api/ingressos?codigo=${encodeURIComponent(code)}`,
+                              {
+                                method: "DELETE",
+                              },
+                            ).catch(() => {});
                             const next = getStoredTickets();
                             setTickets(next);
                             setActiveTicketIndex(0);
@@ -2816,7 +2824,9 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                           }
                         }}
                         className={`bg-white rounded-[22px] p-4 sm:p-5 shadow-[0_4px_20px_rgba(19,27,46,0.05)] flex flex-col justify-between cursor-pointer transition-all hover:shadow-[0_6px_24px_rgba(19,27,46,0.08)] ${
-                          !item.lida ? "border-l-[4px] border-[#016294]" : "opacity-90"
+                          !item.lida
+                            ? "border-l-[4px] border-[#016294]"
+                            : "opacity-90"
                         }`}
                       >
                         <div>
@@ -4664,7 +4674,9 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                   {profile?.categoria || "Categoria Geral"}
                 </span>
                 <span className="font-extrabold text-[#89f5c8] uppercase">
-                  {hasFaceRegistered ? "Biometria Homologada ✓" : "Biometria Pendente"}
+                  {hasFaceRegistered
+                    ? "Biometria Homologada ✓"
+                    : "Biometria Pendente"}
                 </span>
               </div>
             </div>
@@ -4672,7 +4684,11 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
             {/* QR Code de Validação Rápida da Carteira */}
             <div className="my-4 p-3 bg-[#f2f3ff] rounded-2xl flex flex-col items-center">
               <TicketCodeVisual
-                code={profile?.matricula ? `#${profile.matricula.replace(/^#/, "")}` : (profile?.cpf || "PULSE-PE")}
+                code={
+                  profile?.matricula
+                    ? `#${profile.matricula.replace(/^#/, "")}`
+                    : profile?.cpf || "PULSE-PE"
+                }
                 validationUrl={`https://pulsepe.gov.br/socio?id=${encodeURIComponent(profile?.matricula || profile?.cpf || "validar")}`}
                 size={140}
               />
@@ -4740,7 +4756,10 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                   Como funciona a Biometria Facial?
                 </h4>
                 <p className="text-[11.5px] text-[#4e5462] mt-1 leading-relaxed">
-                  Ao cadastrar seu rosto, o sistema gera uma assinatura biométrica criptografada única (SHA-256). Na entrada do estádio, as catracas reconhecem seu rosto em menos de 0.5 segundo, sem necessidade de filas de validação física.
+                  Ao cadastrar seu rosto, o sistema gera uma assinatura
+                  biométrica criptografada única (SHA-256). Na entrada do
+                  estádio, as catracas reconhecem seu rosto em menos de 0.5
+                  segundo, sem necessidade de filas de validação física.
                 </p>
               </div>
 
@@ -4749,7 +4768,9 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                   O que fazer se a catraca não liberar?
                 </h4>
                 <p className="text-[11.5px] text-[#4e5462] mt-1 leading-relaxed">
-                  Abra a aba <strong>Ingressos</strong> e clique em <strong>Ver Código / QR Code</strong> para apresentar o código alternativo ao operador de catraca da arena.
+                  Abra a aba <strong>Ingressos</strong> e clique em{" "}
+                  <strong>Ver Código / QR Code</strong> para apresentar o código
+                  alternativo ao operador de catraca da arena.
                 </p>
               </div>
 
@@ -4758,9 +4779,10 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                   Canais de Atendimento ao Torcedor
                 </h4>
                 <p className="text-[11.5px] text-[#4e5462] mt-1 leading-relaxed">
-                  • <strong>WhatsApp Suporte Arena:</strong> (81) 98765-4321<br />
-                  • <strong>E-mail:</strong> suporte@pulsepe.gov.br<br />
-                  • <strong>Posto Físico:</strong> Portão 02 da Ilha do Retiro (em dias de jogos).
+                  • <strong>WhatsApp Suporte Arena:</strong> (81) 98765-4321
+                  <br />• <strong>E-mail:</strong> suporte@pulsepe.gov.br
+                  <br />• <strong>Posto Físico:</strong> Portão 02 da Ilha do
+                  Retiro (em dias de jogos).
                 </p>
               </div>
             </div>
@@ -4813,7 +4835,10 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                   Conformidade com a Lei 13.709/2018 (LGPD)
                 </h4>
                 <p className="text-[11.5px] text-[#4e5462] mt-1 leading-relaxed">
-                  Os dados biométricos faciais e cadastrais são coletados estritamente para a finalidade de segurança e controle de acesso a eventos desportivos, homologados pela Secretaria de Defesa Social de Pernambuco (SDS-PE).
+                  Os dados biométricos faciais e cadastrais são coletados
+                  estritamente para a finalidade de segurança e controle de
+                  acesso a eventos desportivos, homologados pela Secretaria de
+                  Defesa Social de Pernambuco (SDS-PE).
                 </p>
               </div>
 
@@ -4822,7 +4847,9 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                   Criptografia & Imutabilidade
                 </h4>
                 <p className="text-[11.5px] text-[#4e5462] mt-1 leading-relaxed">
-                  A impressão biométrica é armazenada sob formato criptográfico irreversível (token hash). Nenhuma imagem é repassada a terceiros não autorizados.
+                  A impressão biométrica é armazenada sob formato criptográfico
+                  irreversível (token hash). Nenhuma imagem é repassada a
+                  terceiros não autorizados.
                 </p>
                 {profile?.faceHashSha256 && (
                   <p className="mt-2 text-[10px] font-mono text-[#016294] break-all bg-white p-2 rounded-lg border border-[#eceaf6]">
@@ -4836,7 +4863,9 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                   Seus Direitos como Titular
                 </h4>
                 <p className="text-[11.5px] text-[#4e5462] mt-1 leading-relaxed">
-                  Você pode solicitar a qualquer momento a visualização, atualização ou retificação dos seus dados diretamente neste portal.
+                  Você pode solicitar a qualquer momento a visualização,
+                  atualização ou retificação dos seus dados diretamente neste
+                  portal.
                 </p>
               </div>
             </div>
@@ -4845,10 +4874,15 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
               <button
                 type="button"
                 onClick={() => {
-                  const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(profile, null, 2));
+                  const dataStr =
+                    "data:text/json;charset=utf-8," +
+                    encodeURIComponent(JSON.stringify(profile, null, 2));
                   const downloadAnchor = document.createElement("a");
                   downloadAnchor.setAttribute("href", dataStr);
-                  downloadAnchor.setAttribute("download", `pulse_pe_dados_${profile?.cpf || "titular"}.json`);
+                  downloadAnchor.setAttribute(
+                    "download",
+                    `pulse_pe_dados_${profile?.cpf || "titular"}.json`,
+                  );
                   document.body.appendChild(downloadAnchor);
                   downloadAnchor.click();
                   downloadAnchor.remove();
@@ -4905,7 +4939,9 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
 
             <div className="my-3 flex items-center justify-between gap-2">
               <span className="text-xs text-[#4e5462] font-semibold">
-                {unreadCount > 0 ? `${unreadCount} nova(s) mensagem(ns)` : "Todas as mensagens lidas"}
+                {unreadCount > 0
+                  ? `${unreadCount} nova(s) mensagem(ns)`
+                  : "Todas as mensagens lidas"}
               </span>
               {unreadCount > 0 && (
                 <button

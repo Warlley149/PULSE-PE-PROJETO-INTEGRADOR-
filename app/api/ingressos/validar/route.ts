@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getAdminSession } from "@/app/lib/admin-auth";
 import {
   getServerTicketByCode,
-  listAllServerTickets,
+  listAllMergedServerTickets,
   reviewServerTicket,
 } from "@/app/lib/server-tickets";
 
@@ -19,11 +19,12 @@ export async function GET(request: Request) {
   const codigo = (searchParams.get("codigo") || "").trim().toUpperCase();
 
   if (codigo) {
-    const ticket = getServerTicketByCode(codigo);
+    const ticket = await getServerTicketByCode(codigo);
     return NextResponse.json({ ticket });
   }
 
-  return NextResponse.json({ tickets: listAllServerTickets() });
+  const tickets = await listAllMergedServerTickets();
+  return NextResponse.json({ tickets });
 }
 
 export async function POST(request: Request) {
@@ -76,7 +77,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const updated = reviewServerTicket({
+    const updated = await reviewServerTicket({
       codigo,
       decision: body.decision,
       motivoReprovacao: body.motivoReprovacao,

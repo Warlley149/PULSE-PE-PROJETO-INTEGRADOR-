@@ -91,8 +91,9 @@ const STORAGE_KEYS = {
 } as const;
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "/api/biometria";
-const PYTHON_API_URL =
-  process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://127.0.0.1:8000";
+const PYTHON_API_URL = (
+  process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://127.0.0.1:8000"
+).replace(/\/+$/, "");
 
 export function formatCPF(value: string): string {
   const digits = value.replace(/\D/g, "").slice(0, 11);
