@@ -1083,9 +1083,39 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
   };
 
   const handleAdminLogout = async () => {
-    await fetch("/api/admin/login", { method: "DELETE" });
+    try {
+      await fetch("/api/admin/login", { method: "DELETE" });
+    } catch {
+      // ignore network error
+    }
     setAdminSessionEmail(null);
     setStatusToast("Sessão do Administrador encerrada.");
+  };
+
+  const handleFullLogout = async () => {
+    stopCamera();
+    logoutUserSession();
+    if (adminSessionEmail) {
+      try {
+        await fetch("/api/admin/login", { method: "DELETE" });
+      } catch {
+        // ignore network error
+      }
+    }
+    setAdminSessionEmail(null);
+    setLoggedEmail(null);
+    setProfile(null);
+    setTickets([]);
+    setNotifications([]);
+    setTicketStatuses({});
+    setActiveTicketIndex(0);
+    setFaceChecks(null);
+    setFaceRejectionReasons([]);
+    setPendingRegistration(null);
+    setActiveModal(null);
+    setAuthMode("login");
+    setActiveTab("perfil");
+    setStatusToast("Você saiu da sua conta.");
   };
 
   const handleCopyTicketCode = async (code: string) => {
@@ -1193,20 +1223,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         onOpenSuporte={() => setActiveModal("suporte")}
         onOpenPrivacidade={() => setActiveModal("privacidade")}
         disableBrandClick={requiresOnboardingGate}
-        onLogout={() => {
-          logoutUserSession();
-          setLoggedEmail(null);
-          setProfile(null);
-          setTickets([]);
-          setNotifications([]);
-          setTicketStatuses({});
-          setActiveTicketIndex(0);
-          setFaceChecks(null);
-          setFaceRejectionReasons([]);
-          setPendingRegistration(null);
-          setAuthMode("login");
-          setStatusToast("Você saiu da sua conta.");
-        }}
+        onLogout={() => void handleFullLogout()}
       />
 
       {/* Main Content Container */}
@@ -3831,20 +3848,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
 
                 <button
                   type="button"
-                  onClick={() => {
-                    logoutUserSession();
-                    setLoggedEmail(null);
-                    setProfile(null);
-                    setTickets([]);
-                    setNotifications([]);
-                    setTicketStatuses({});
-                    setActiveTicketIndex(0);
-                    setFaceChecks(null);
-                    setFaceRejectionReasons([]);
-                    setPendingRegistration(null);
-                    setAuthMode("login");
-                    setStatusToast("Você saiu da sua conta.");
-                  }}
+                  onClick={() => void handleFullLogout()}
                   className="w-full bg-[#ffdad6] hover:bg-[#ffc8c2] text-[#93000a] rounded-2xl py-3.5 px-4 font-extrabold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
                 >
                   <svg
