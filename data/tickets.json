@@ -1,5 +1,23 @@
 [
   {
+    "codigo": "PE-110021",
+    "matchId": "fpf-2026-forro-r1-cen-ibi",
+    "competicao": "PERNAMBUCANO • TURNO FORRÓ",
+    "jogo": "Central x Íbis",
+    "estadio": "Estádio Lacerdão",
+    "dataHorario": "Sáb, 21/11 • 17:00",
+    "setor": "Setor Sul (Visitante)",
+    "subsetor": "Acesso Exclusivo Visitante",
+    "portao": "08",
+    "enderecoPortao": "Portão Visitante • Estádio Lacerdão",
+    "titular": "teste",
+    "cpf": "000.000.000-00",
+    "userEmail": "teste@gmail.com",
+    "biometriaOk": true,
+    "status": "pendente",
+    "createdAt": "2026-11-23T17:52:10.451Z"
+  },
+  {
     "codigo": "PE-920172",
     "matchId": "fpf-2026-forro-r1-pet-ame",
     "competicao": "PERNAMBUCANO • TURNO FORRÓ",
@@ -30,10 +48,12 @@
     "enderecoPortao": "Portão Oeste • Estádio Paulo Coelho",
     "titular": "Titular não informado",
     "cpf": "",
-    "userEmail": "",
     "biometriaOk": false,
-    "status": "pendente",
-    "createdAt": "2026-11-20T17:48:56.255Z"
+    "createdAt": "2026-11-20T17:48:56.255Z",
+    "status": "reprovado",
+    "motivoReprovacao": "Sem biometria",
+    "reviewedAt": "2026-11-23T17:54:35.531Z",
+    "reviewedBy": "admin@pulsepe.gov.br"
   },
   {
     "codigo": "PE-634843",
@@ -86,8 +106,8 @@
     "titular": "Warlley dos Santos Tenório",
     "cpf": "123.456.789-00",
     "biometriaOk": true,
-    "status": "pendente",
-    "createdAt": "2026-11-20T17:04:23.086Z"
+    "createdAt": "2026-11-20T17:04:23.086Z",
+    "status": "pendente"
   },
   {
     "codigo": "PE-337378",
