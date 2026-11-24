@@ -200,12 +200,11 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     setAcessibilidade(p.acessibilidade);
   }, []);
 
-  const refreshOfficialMatches = useCallback(async () => {
+  const refreshOfficialMatches = useCallback(async (force = false) => {
     setLoadingMatches(true);
     try {
-      const res = await fetch(`/api/jogos?_t=${Date.now()}`, {
-        cache: "no-store",
-      });
+      const url = force ? `/api/jogos?_t=${Date.now()}` : "/api/jogos";
+      const res = await fetch(url, force ? { cache: "no-store" } : undefined);
       if (res.ok) {
         const data = (await res.json()) as { jogos?: OfficialMatch[] };
         if (Array.isArray(data.jogos)) {
@@ -242,30 +241,6 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
         ) {
           setActiveTab(tabParam);
         }
-      }
-
-      // Ensure existing local tickets are registered on the server for the Admin list
-      for (const t of savedTickets) {
-        void fetch("/api/ingressos", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            codigo: t.codigoIngresso,
-            matchId: t.matchId,
-            competicao: t.competicao,
-            jogo: `${t.mandante} x ${t.visitante}`,
-            estadio: t.estadio,
-            dataHorario: t.dataHorario,
-            setor: t.setor,
-            subsetor: t.subsetor,
-            portao: t.portao,
-            enderecoPortao: t.enderecoPortao,
-            titular: savedProfile?.nome || "Titular não informado",
-            cpf: savedProfile?.cpf || "",
-            userEmail: savedProfile?.email || getLoggedUserEmail() || "",
-            biometriaOk: Boolean(savedProfile?.faceImageDataUrl),
-          }),
-        }).catch(() => {});
       }
     };
 
@@ -360,14 +335,17 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
 
     const timer = window.setTimeout(() => {
       syncState();
+      // Silent warm-up ping so Render wakes up immediately in the background
+      void fetch(`${PYTHON_API_URL}/health`, { mode: "cors" }).catch(() => {});
       void loadTicketStatuses();
       void loadAdminSession();
       void loadNetworkOrigin();
-      void refreshOfficialMatches();
+      void refreshOfficialMatches(false);
     }, 0);
     const poll = window.setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
       void loadTicketStatuses();
-    }, 5000);
+    }, 15000);
 
     const handleClickOutside = (e: MouseEvent) => {
       if (
@@ -508,8 +486,13 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
     const canvas = canvasRef.current;
     if (!video || !canvas || video.videoWidth === 0) return;
 
-    const width = video.videoWidth;
-    const height = video.videoHeight;
+    const maxDim = 640;
+    const scale = Math.min(
+      1,
+      maxDim / Math.max(video.videoWidth, video.videoHeight),
+    );
+    const width = Math.round(video.videoWidth * scale);
+    const height = Math.round(video.videoHeight * scale);
     canvas.width = width;
     canvas.height = height;
 
@@ -521,7 +504,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
       ctx.scale(-1, 1);
     }
     ctx.drawImage(video, 0, 0, width, height);
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
     setFaceRejectionReasons([]);
     setCameraError(null);
     setValidatingFace(true);
@@ -1986,7 +1969,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                   <button
                     type="button"
                     disabled={loadingMatches}
-                    onClick={() => void refreshOfficialMatches()}
+                    onClick={() => void refreshOfficialMatches(true)}
                     className="px-3 py-1.5 rounded-full text-xs font-extrabold whitespace-nowrap bg-[#e6f0f5] hover:bg-[#d5e7f0] text-[#016294] cursor-pointer transition-colors disabled:opacity-60"
                   >
                     {loadingMatches ? "Atualizando..." : "↻ Atualizar Jogos"}
