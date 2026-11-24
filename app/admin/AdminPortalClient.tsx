@@ -143,8 +143,9 @@ export function AdminPortalClient({
       void fetchTickets(initialScannedCode || undefined);
     }, 0);
     const interval = window.setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
       void fetchTickets();
-    }, 6000);
+    }, 15000);
     return () => {
       window.clearTimeout(initTimer);
       window.clearInterval(interval);
@@ -363,6 +364,11 @@ export function AdminPortalClient({
       }
 
       setSelectedTicket(data.ticket);
+      setTickets((prev) =>
+        prev.map((item) =>
+          item.codigo === data.ticket!.codigo ? data.ticket! : item,
+        ),
+      );
       setRejectModalTicket(null);
       setRejectionReason("");
       setActionMessage({
@@ -374,7 +380,6 @@ export function AdminPortalClient({
               ? `Entrada REPROVADA para ${data.ticket.codigo}. Motivo: ${data.ticket.motivoReprovacao}`
               : `Status de ${data.ticket.codigo} retornado para PENDENTE.`,
       });
-      await fetchTickets(data.ticket.codigo);
     } catch {
       setActionMessage({
         type: "error",

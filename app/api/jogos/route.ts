@@ -458,17 +458,53 @@ async function fetchEspnLiveMatches(): Promise<OfficialMatch[]> {
   return results;
 }
 
-export async function GET() {
+let cachedMatchesPayload: {
+  expiresAt: number;
+  payload: {
+    atualizadoEm: string;
+    fontePrincipal: string;
+    totalAoVivoEspn: number;
+    jogos: OfficialMatch[];
+  };
+} | null = null;
+
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const forceRefresh = searchParams.has("_t");
+
+  if (
+    !forceRefresh &&
+    cachedMatchesPayload &&
+    Date.now() < cachedMatchesPayload.expiresAt
+  ) {
+    return NextResponse.json(cachedMatchesPayload.payload, {
+      headers: {
+        "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600",
+      },
+    });
+  }
+
   const liveEspnMatches = await fetchEspnLiveMatches();
   const allMatches = [...liveEspnMatches, ...OFFICIAL_FPF_MATCHES].sort(
     (a, b) => new Date(a.dataIso).getTime() - new Date(b.dataIso).getTime(),
   );
 
-  return NextResponse.json({
+  const payload = {
     atualizadoEm: new Date().toISOString(),
     fontePrincipal:
       "ESPN Brasil (API Ao Vivo — Série A, Série B, Libertadores, Sul-Americana) & FPF-PE (Ilha do Retiro / Pernambuco)",
     totalAoVivoEspn: liveEspnMatches.length,
     jogos: allMatches,
+  };
+
+  cachedMatchesPayload = {
+    expiresAt: Date.now() + 5 * 60 * 1000,
+    payload,
+  };
+
+  return NextResponse.json(payload, {
+    headers: {
+      "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600",
+    },
   });
 }
