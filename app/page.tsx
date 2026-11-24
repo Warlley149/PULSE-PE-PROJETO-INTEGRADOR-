@@ -57,7 +57,8 @@ type ModalType =
   | "carteirinha"
   | "suporte"
   | "privacidade"
-  | "notificacoes-drawer";
+  | "notificacoes-drawer"
+  | "passe-facial";
 
 interface PulseAppProps {
   initialTab?: AppTab;
@@ -1643,8 +1644,7 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                       "reprovado"
                   }
                   onClick={() => {
-                    setTicketForCodeModal(activeTicket);
-                    setActiveModal("codigo-arena");
+                    setActiveModal("passe-facial");
                   }}
                   className={`flex-1 transition-all rounded-xl sm:rounded-2xl py-3.5 sm:py-4 px-4 flex items-center justify-center gap-2.5 shadow-xs ${
                     activeTicket &&
@@ -5015,6 +5015,112 @@ export function PulsePeApp({ initialTab = "ingressos" }: PulseAppProps) {
                 Concluir
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Passe Facial Digital (Somente Visualização — Biometria Imutável) */}
+      {activeModal === "passe-facial" && (
+        <div
+          className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto"
+          onClick={() => setActiveModal(null)}
+        >
+          <div
+            className="bg-white rounded-[28px] max-w-md w-full p-5 sm:p-6 shadow-2xl my-auto flex flex-col gap-4 border border-[#eceaf6]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-[#006c4a]" />
+                <h2 className="text-base font-extrabold text-[#131b2e]">
+                  Passe Facial Digital
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveModal(null)}
+                className="text-xs font-bold text-[#4e5462] hover:text-[#131b2e] cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+
+            {profile?.faceImageDataUrl ? (
+              <>
+                <div className="relative rounded-2xl overflow-hidden bg-[#131b2e] aspect-4/3 border-2 border-[#006c4a]/40 shadow-inner">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={profile.faceImageDataUrl}
+                    alt={profile.nome || "Passe Facial Digital"}
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute top-3 left-3 inline-flex items-center gap-1.5 rounded-full bg-[#006c4a]/95 text-white px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider shadow-xs">
+                    <span>✓ BIOMETRIA HOMOLOGADA</span>
+                  </div>
+                  {profile.faceQualityScore ? (
+                    <div className="absolute bottom-3 right-3 rounded-full bg-black/70 text-white px-2.5 py-1 text-[10px] font-bold">
+                      Qualidade: {profile.faceQualityScore}%
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="bg-[#f2f3ff] rounded-2xl p-4 flex flex-col gap-2.5 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-[#4e5462]">
+                      IMPRESSÃO DIGITAL FACIAL ÚNICA
+                    </span>
+                    <span className="text-[10px] font-extrabold text-[#006c4a] bg-[#d4f4e4] px-2 py-0.5 rounded-full">
+                      TRAVADA
+                    </span>
+                  </div>
+                  <p className="font-mono text-sm sm:text-base font-extrabold tracking-widest text-[#016294] bg-white rounded-xl px-3 py-2 border border-[#e2e7ff] text-center">
+                    {profile.faceFingerprintId || "BIO-HOMOLOGADA"}
+                  </p>
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase text-[#4e5462]">
+                        Titular
+                      </p>
+                      <p className="font-extrabold text-[#131b2e] truncate">
+                        {profile.nome || "—"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-bold uppercase text-[#4e5462]">
+                        CPF
+                      </p>
+                      <p className="font-extrabold text-[#131b2e]">
+                        {profile.cpf || "—"}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-center text-[#4e5462] leading-relaxed">
+                  Sua biometria facial é única e definitiva (somente
+                  visualização). Apresente-se diretamente na catraca facial
+                  dedicada.
+                </p>
+              </>
+            ) : (
+              <div className="py-6 text-center bg-[#f2f3ff] rounded-2xl p-4">
+                <p className="text-sm font-extrabold text-[#131b2e]">
+                  Biometria facial não cadastrada
+                </p>
+                <p className="text-xs text-[#4e5462] mt-1">
+                  Esta conta não possui uma impressão facial registrada.
+                </p>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setActiveModal(null)}
+              className="w-full bg-[#016294] hover:bg-[#01537e] text-white font-extrabold text-xs uppercase tracking-wider py-3 rounded-xl cursor-pointer transition-colors"
+            >
+              Fechar Passe Facial
+            </button>
           </div>
         </div>
       )}
