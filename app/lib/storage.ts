@@ -92,7 +92,7 @@ const STORAGE_KEYS = {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "/api/biometria";
 const PYTHON_API_URL = (
-  process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://127.0.0.1:8000"
+  process.env.NEXT_PUBLIC_PYTHON_API_URL || "https://pulse-pe-api.onrender.com"
 ).replace(/\/+$/, "");
 
 export function formatCPF(value: string): string {

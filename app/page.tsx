@@ -29,7 +29,7 @@ import {
 } from "@/app/lib/storage";
 
 const PYTHON_API_URL = (
-  process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://127.0.0.1:8000"
+  process.env.NEXT_PUBLIC_PYTHON_API_URL || "https://pulse-pe-api.onrender.com"
 ).replace(/\/+$/, "");
 
 interface FaceCheckItem {
