@@ -26,8 +26,8 @@ from database import (
 from face_engine import cosine_similarity, validate_and_extract_face
 
 app = FastAPI(
-    title="PULSE-PE — Back-end Completo & Reconhecimento Facial (Python + SQLite)",
-    version="2.0.0",
+    title="PULSE-PE — Back-end Completo & Reconhecimento Facial (Python + Supabase/SQLite)",
+    version="2.1.0",
 )
 
 app.add_middleware(

@@ -1,28 +1,128 @@
 import base64
 import hashlib
 import json
+import os
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
+
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).parent
+load_dotenv(BASE_DIR / ".env")
+
 DB_PATH = BASE_DIR / "pulse_pe.db"
 FACES_DIR = BASE_DIR / "storage" / "faces"
 
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+SUPABASE_FACES_BUCKET = os.getenv("SUPABASE_FACES_BUCKET", "faces").strip() or "faces"
 
-def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+IS_POSTGRES = DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith(
+    "postgresql://"
+)
+
+if IS_POSTGRES:
+    import psycopg
+    from psycopg.rows import dict_row
+
+
+class _DBSession:
+    """Thin adapter so SQLite (?) and PostgreSQL (%s) share identical queries."""
+
+    def __init__(self, conn: Any, is_pg: bool) -> None:
+        self._conn = conn
+        self._is_pg = is_pg
+
+    def _adapt_sql(self, sql: str) -> str:
+        return sql.replace("?", "%s") if self._is_pg else sql
+
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
+        adapted = self._adapt_sql(sql)
+        if self._is_pg:
+            cur = self._conn.cursor(row_factory=dict_row)
+            cur.execute(adapted, params)
+            return cur
+        return self._conn.execute(adapted, params)
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+
+@contextmanager
+def get_connection() -> Iterator[_DBSession]:
+    if IS_POSTGRES:
+        conn = psycopg.connect(DATABASE_URL)
+        try:
+            yield _DBSession(conn, is_pg=True)
+        finally:
+            conn.close()
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield _DBSession(conn, is_pg=False)
+        finally:
+            conn.close()
+
+
+def _upload_face_to_supabase_storage(fingerprint_id: str, img_bytes: bytes) -> Optional[str]:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return None
+    try:
+        import httpx
+
+        object_path = f"{fingerprint_id}.jpg"
+        url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_FACES_BUCKET}/{object_path}"
+        headers = {
+            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+            "Content-Type": "image/jpeg",
+            "x-upsert": "true",
+        }
+        resp = httpx.post(url, content=img_bytes, headers=headers, timeout=15.0)
+        if resp.status_code in (200, 201):
+            return f"supabase://{SUPABASE_FACES_BUCKET}/{object_path}"
+    except Exception:
+        pass
+    return None
+
+
+def save_face_file(fingerprint_id: str, data_url: str) -> str:
+    raw_b64 = data_url.split(",", 1)[1] if "," in data_url else data_url
+    img_bytes = base64.b64decode(raw_b64)
+
+    # 1. Upload to Supabase Storage bucket `faces` when configured
+    cloud_path = _upload_face_to_supabase_storage(fingerprint_id, img_bytes)
+
+    # 2. Also keep a local copy in storage/faces/ when filesystem is writable
+    local_rel = ""
+    try:
+        FACES_DIR.mkdir(parents=True, exist_ok=True)
+        file_path = FACES_DIR / f"{fingerprint_id}.jpg"
+        file_path.write_bytes(img_bytes)
+        local_rel = str(file_path.relative_to(BASE_DIR))
+    except Exception:
+        pass
+
+    return cloud_path or local_rel
 
 
 def init_db() -> None:
-    FACES_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        FACES_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    float_type = "DOUBLE PRECISION" if IS_POSTGRES else "REAL"
+
     with get_connection() as conn:
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
                 nome TEXT NOT NULL,
@@ -42,7 +142,7 @@ def init_db() -> None:
                 face_fingerprint_id TEXT NOT NULL UNIQUE,
                 face_embedding_json TEXT NOT NULL,
                 face_hash_sha256 TEXT NOT NULL,
-                face_quality_score REAL NOT NULL,
+                face_quality_score {float_type} NOT NULL,
                 face_image_data_url TEXT NOT NULL,
                 face_image_path TEXT DEFAULT '',
                 face_locked INTEGER NOT NULL DEFAULT 1,
@@ -52,27 +152,28 @@ def init_db() -> None:
             """
         )
 
-        # Safe column migration if pulse_pe.db already existed from previous version
-        existing_cols = {
-            row["name"]
-            for row in conn.execute("PRAGMA table_info(users)").fetchall()
-        }
-        migrations = {
-            "plano": "TEXT DEFAULT ''",
-            "categoria": "TEXT DEFAULT ''",
-            "membro_desde": "TEXT DEFAULT ''",
-            "telefone": "TEXT DEFAULT ''",
-            "documento_identificacao": "TEXT DEFAULT ''",
-            "orgao_emissor": "TEXT DEFAULT ''",
-            "acessibilidade": "TEXT DEFAULT ''",
-            "alertas_portao": "INTEGER NOT NULL DEFAULT 1",
-            "catraca_tempo_real": "INTEGER NOT NULL DEFAULT 1",
-            "face_image_path": "TEXT DEFAULT ''",
-            "updated_at": "TEXT DEFAULT ''",
-        }
-        for col, col_def in migrations.items():
-            if col not in existing_cols:
-                conn.execute(f"ALTER TABLE users ADD COLUMN {col} {col_def}")
+        # Safe column migration for older local SQLite databases
+        if not IS_POSTGRES:
+            existing_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(users)").fetchall()
+            }
+            migrations = {
+                "plano": "TEXT DEFAULT ''",
+                "categoria": "TEXT DEFAULT ''",
+                "membro_desde": "TEXT DEFAULT ''",
+                "telefone": "TEXT DEFAULT ''",
+                "documento_identificacao": "TEXT DEFAULT ''",
+                "orgao_emissor": "TEXT DEFAULT ''",
+                "acessibilidade": "TEXT DEFAULT ''",
+                "alertas_portao": "INTEGER NOT NULL DEFAULT 1",
+                "catraca_tempo_real": "INTEGER NOT NULL DEFAULT 1",
+                "face_image_path": "TEXT DEFAULT ''",
+                "updated_at": "TEXT DEFAULT ''",
+            }
+            for col, col_def in migrations.items():
+                if col not in existing_cols:
+                    conn.execute(f"ALTER TABLE users ADD COLUMN {col} {col_def}")
 
         conn.execute(
             """
@@ -114,15 +215,15 @@ def init_db() -> None:
         )
 
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS biometric_logs (
                 id TEXT PRIMARY KEY,
                 user_email TEXT DEFAULT '',
                 tipo TEXT NOT NULL,
                 aprovado INTEGER NOT NULL,
-                similaridade REAL DEFAULT 0,
-                qualidade REAL DEFAULT 0,
-                checks_json TEXT DEFAULT '{}',
+                similaridade {float_type} DEFAULT 0,
+                qualidade {float_type} DEFAULT 0,
+                checks_json TEXT DEFAULT '{{}}',
                 motivos_json TEXT DEFAULT '[]',
                 created_at TEXT NOT NULL
             )
@@ -146,33 +247,27 @@ def init_db() -> None:
         )
         conn.commit()
 
-        # Backfill storage/faces/*.jpg for any user already in SQLite without a saved .jpg file
+        # Backfill missing face files in local storage/faces/ or Supabase Storage
         rows = conn.execute(
             "SELECT id, face_fingerprint_id, face_image_data_url, face_image_path FROM users"
         ).fetchall()
         for r in rows:
             fp_id = r["face_fingerprint_id"]
             data_url = r["face_image_data_url"]
+            cur_path = r["face_image_path"] or ""
+            needs_cloud = bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY) and not cur_path.startswith("supabase://")
             expected_file = FACES_DIR / f"{fp_id}.jpg"
-            if data_url and (not expected_file.exists() or not r["face_image_path"]):
+            if data_url and (needs_cloud or not expected_file.exists() or not cur_path):
                 try:
-                    rel_path = save_face_file(fp_id, data_url)
-                    conn.execute(
-                        "UPDATE users SET face_image_path = ? WHERE id = ?",
-                        (rel_path, r["id"]),
-                    )
+                    saved_path = save_face_file(fp_id, data_url)
+                    if saved_path:
+                        conn.execute(
+                            "UPDATE users SET face_image_path = ? WHERE id = ?",
+                            (saved_path, r["id"]),
+                        )
                 except Exception:
                     pass
         conn.commit()
-
-
-def save_face_file(fingerprint_id: str, data_url: str) -> str:
-    FACES_DIR.mkdir(parents=True, exist_ok=True)
-    raw_b64 = data_url.split(",", 1)[1] if "," in data_url else data_url
-    img_bytes = base64.b64decode(raw_b64)
-    file_path = FACES_DIR / f"{fingerprint_id}.jpg"
-    file_path.write_bytes(img_bytes)
-    return str(file_path.relative_to(BASE_DIR))
 
 
 def hash_password(password: str, salt: str) -> str:
@@ -538,15 +633,20 @@ def list_notifications(user_email: Optional[str] = None) -> list[dict[str, Any]]
 
 def get_storage_summary() -> dict[str, Any]:
     with get_connection() as conn:
-        users_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        tickets_count = conn.execute("SELECT COUNT(*) FROM tickets").fetchone()[0]
-        logs_count = conn.execute("SELECT COUNT(*) FROM biometric_logs").fetchone()[0]
-        notifs_count = conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0]
+        users_row = conn.execute("SELECT COUNT(*) AS cnt FROM users").fetchone()
+        tickets_row = conn.execute("SELECT COUNT(*) AS cnt FROM tickets").fetchone()
+        logs_row = conn.execute("SELECT COUNT(*) AS cnt FROM biometric_logs").fetchone()
+        notifs_row = conn.execute("SELECT COUNT(*) AS cnt FROM notifications").fetchone()
         return {
-            "databasePath": str(DB_PATH),
-            "facesDirectory": str(FACES_DIR),
-            "totalUsers": users_count,
-            "totalTickets": tickets_count,
-            "totalBiometricLogs": logs_count,
-            "totalNotifications": notifs_count,
+            "databaseEngine": "PostgreSQL (Supabase)" if IS_POSTGRES else "SQLite (Local)",
+            "databasePath": "Supabase Cloud" if IS_POSTGRES else str(DB_PATH),
+            "facesStorage": (
+                f"Supabase Storage ({SUPABASE_FACES_BUCKET})"
+                if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY
+                else str(FACES_DIR)
+            ),
+            "totalUsers": users_row["cnt"],
+            "totalTickets": tickets_row["cnt"],
+            "totalBiometricLogs": logs_row["cnt"],
+            "totalNotifications": notifs_row["cnt"],
         }
