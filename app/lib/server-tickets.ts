@@ -27,8 +27,9 @@ export interface ServerTicketRecord {
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const TICKETS_FILE = path.join(DATA_DIR, "tickets.json");
-const PYTHON_API_URL =
-  process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://127.0.0.1:8000";
+const PYTHON_API_URL = (
+  process.env.NEXT_PUBLIC_PYTHON_API_URL || "http://127.0.0.1:8000"
+).replace(/\/+$/, "");
 
 function readDiskTickets(): Map<string, ServerTicketRecord> {
   const map = new Map<string, ServerTicketRecord>();
@@ -61,7 +62,27 @@ function writeDiskTickets(map: Map<string, ServerTicketRecord>): void {
     );
     fs.writeFileSync(TICKETS_FILE, JSON.stringify(sorted, null, 2), "utf8");
   } catch {
-    // ignore fs errors on read-only serverless environments
+    // ignore fs errors on read-only serverless environments (Vercel)
+  }
+}
+
+async function fetchPython(
+  urlPath: string,
+  init?: RequestInit,
+  timeoutMs = 15000,
+): Promise<Response | null> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(`${PYTHON_API_URL}${urlPath}`, {
+      ...init,
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    return res;
+  } catch {
+    return null;
   }
 }
 
@@ -73,9 +94,8 @@ export function listAllServerTickets(): ServerTicketRecord[] {
 }
 
 /**
- * Merges tickets from local disk (data/tickets.json) AND the Python SQLite
- * back-end so the Admin portal ALWAYS displays every ticket from every user
- * without exception.
+ * Merges tickets from the Python/Supabase back-end AND local disk so the Admin
+ * portal ALWAYS displays every ticket from every user (both locally and on Vercel).
  */
 export async function listAllMergedServerTickets(): Promise<
   ServerTicketRecord[]
@@ -83,16 +103,9 @@ export async function listAllMergedServerTickets(): Promise<
   const map = readDiskTickets();
   let changed = false;
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2500);
-    const res = await fetch(`${PYTHON_API_URL}/api/v1/tickets`, {
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-
-    if (res.ok) {
+  const res = await fetchPython("/api/v1/tickets");
+  if (res && res.ok) {
+    try {
       const data = (await res.json()) as { tickets?: ServerTicketRecord[] };
       if (Array.isArray(data.tickets)) {
         for (const pyTicket of data.tickets) {
@@ -103,7 +116,6 @@ export async function listAllMergedServerTickets(): Promise<
             map.set(code, { ...pyTicket, codigo: code });
             changed = true;
           } else {
-            // Merge any missing fields (e.g. userEmail or newer review)
             const localRev = local.reviewedAt
               ? new Date(local.reviewedAt).getTime()
               : 0;
@@ -111,7 +123,7 @@ export async function listAllMergedServerTickets(): Promise<
               ? new Date(pyTicket.reviewedAt).getTime()
               : 0;
             const merged: ServerTicketRecord =
-              pyRev > localRev
+              pyRev >= localRev
                 ? {
                     ...local,
                     ...pyTicket,
@@ -128,9 +140,9 @@ export async function listAllMergedServerTickets(): Promise<
           }
         }
       }
+    } catch {
+      // ignore parse errors
     }
-  } catch {
-    // Python backend offline — return disk tickets cleanly
   }
 
   if (changed) {
@@ -142,19 +154,70 @@ export async function listAllMergedServerTickets(): Promise<
   );
 }
 
-export function getServerTicketByCode(
+export async function getServerTicketByCode(
   codigo: string,
-): ServerTicketRecord | null {
+): Promise<ServerTicketRecord | null> {
+  const code = codigo.trim().toUpperCase();
+  if (!code) return null;
+
+  const res = await fetchPython(
+    `/api/v1/tickets?codigos=${encodeURIComponent(code)}`,
+  );
+  if (res && res.ok) {
+    try {
+      const data = (await res.json()) as { tickets?: ServerTicketRecord[] };
+      if (Array.isArray(data.tickets) && data.tickets.length > 0) {
+        return data.tickets[0];
+      }
+    } catch {
+      // fallback to local disk
+    }
+  }
+
   const map = readDiskTickets();
-  return map.get(codigo.trim().toUpperCase()) || null;
+  return map.get(code) || null;
 }
 
-export function upsertServerTicket(
+export async function getServerTicketsByCodes(
+  codigos: string[],
+): Promise<ServerTicketRecord[]> {
+  const clean = codigos.map((c) => c.trim().toUpperCase()).filter(Boolean);
+  if (clean.length === 0) return [];
+
+  const resultMap = new Map<string, ServerTicketRecord>();
+  const diskMap = readDiskTickets();
+  for (const c of clean) {
+    const local = diskMap.get(c);
+    if (local) resultMap.set(c, local);
+  }
+
+  const res = await fetchPython(
+    `/api/v1/tickets?codigos=${encodeURIComponent(clean.join(","))}`,
+  );
+  if (res && res.ok) {
+    try {
+      const data = (await res.json()) as { tickets?: ServerTicketRecord[] };
+      if (Array.isArray(data.tickets)) {
+        for (const item of data.tickets) {
+          if (item?.codigo) {
+            resultMap.set(item.codigo.trim().toUpperCase(), item);
+          }
+        }
+      }
+    } catch {
+      // ignore parse error
+    }
+  }
+
+  return Array.from(resultMap.values());
+}
+
+export async function upsertServerTicket(
   input: Omit<ServerTicketRecord, "status" | "createdAt"> & {
     status?: TicketValidationStatus;
     createdAt?: string;
   },
-): ServerTicketRecord {
+): Promise<ServerTicketRecord> {
   const map = readDiskTickets();
   const code = input.codigo.trim().toUpperCase();
   const existing = map.get(code);
@@ -173,23 +236,31 @@ export function upsertServerTicket(
   map.set(code, record);
   writeDiskTickets(map);
 
-  // Also mirror to Python SQLite database asynchronously
-  void fetch(`${PYTHON_API_URL}/api/v1/tickets`, {
+  // Await persistence on Python/Supabase so Vercel Serverless never drops it
+  const res = await fetchPython("/api/v1/tickets", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(record),
-  }).catch(() => {});
+  });
+  if (res && res.ok) {
+    try {
+      const data = (await res.json()) as { ticket?: ServerTicketRecord };
+      if (data.ticket) return data.ticket;
+    } catch {
+      // return local record
+    }
+  }
 
   return record;
 }
 
-export function reviewServerTicket(params: {
+export async function reviewServerTicket(params: {
   codigo: string;
   decision: "aprovado" | "reprovado" | "pendente";
   motivoReprovacao?: string;
   reviewedBy: string;
   fallbackMeta?: Partial<ServerTicketRecord>;
-}): ServerTicketRecord {
+}): Promise<ServerTicketRecord> {
   const map = readDiskTickets();
   const code = params.codigo.trim().toUpperCase();
   const existing = map.get(code);
@@ -213,6 +284,7 @@ export function reviewServerTicket(params: {
       params.fallbackMeta?.titular ||
       "Titular não informado",
     cpf: existing?.cpf || params.fallbackMeta?.cpf || "",
+    userEmail: existing?.userEmail || params.fallbackMeta?.userEmail || "",
     biometriaOk:
       existing?.biometriaOk ?? Boolean(params.fallbackMeta?.biometriaOk),
     createdAt: existing?.createdAt || now,
@@ -230,8 +302,8 @@ export function reviewServerTicket(params: {
   map.set(code, updated);
   writeDiskTickets(map);
 
-  // Also mirror review decision to Python SQLite database
-  void fetch(`${PYTHON_API_URL}/api/v1/tickets/review`, {
+  // Await review update on Python/Supabase so Vercel Serverless persists it
+  const res = await fetchPython("/api/v1/tickets/review", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -240,20 +312,28 @@ export function reviewServerTicket(params: {
       motivoReprovacao: updated.motivoReprovacao || "",
       reviewedBy: params.reviewedBy,
     }),
-  }).catch(() => {});
+  });
+  if (res && res.ok) {
+    try {
+      const data = (await res.json()) as { ticket?: ServerTicketRecord };
+      if (data.ticket) return data.ticket;
+    } catch {
+      // return local updated
+    }
+  }
 
   return updated;
 }
 
-export function deleteServerTicket(codigo: string): boolean {
+export async function deleteServerTicket(codigo: string): Promise<boolean> {
   const map = readDiskTickets();
   const code = codigo.trim().toUpperCase();
   const existed = map.delete(code);
   if (existed) {
     writeDiskTickets(map);
   }
-  void fetch(`${PYTHON_API_URL}/api/v1/tickets/${encodeURIComponent(code)}`, {
+  const res = await fetchPython(`/api/v1/tickets/${encodeURIComponent(code)}`, {
     method: "DELETE",
-  }).catch(() => {});
-  return existed;
+  });
+  return existed || Boolean(res && res.ok);
 }

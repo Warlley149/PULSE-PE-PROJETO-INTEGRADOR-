@@ -3,6 +3,7 @@ import { getAdminSession } from "@/app/lib/admin-auth";
 import {
   deleteServerTicket,
   getServerTicketByCode,
+  getServerTicketsByCodes,
   listAllMergedServerTickets,
   upsertServerTicket,
 } from "@/app/lib/server-tickets";
@@ -12,17 +13,14 @@ export async function GET(request: Request) {
   const codigo = searchParams.get("codigo");
   const codigos = searchParams.get("codigos");
 
-  // Client can query status of its own ticket code(s)
+  // Client can query status of its own ticket code(s) directly from Python/Supabase
   if (codigo) {
-    const found = getServerTicketByCode(codigo);
+    const found = await getServerTicketByCode(codigo);
     return NextResponse.json({ ticket: found });
   }
 
   if (codigos) {
-    const list = codigos
-      .split(",")
-      .map((c) => getServerTicketByCode(c))
-      .filter(Boolean);
+    const list = await getServerTicketsByCodes(codigos.split(","));
     return NextResponse.json({ tickets: list });
   }
 
@@ -67,7 +65,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const saved = upsertServerTicket({
+    const saved = await upsertServerTicket({
       codigo: body.codigo,
       matchId: body.matchId || "",
       competicao: body.competicao || "",
@@ -99,6 +97,6 @@ export async function DELETE(request: Request) {
   if (!codigo) {
     return NextResponse.json({ error: "Código obrigatório." }, { status: 400 });
   }
-  const deleted = deleteServerTicket(codigo);
+  const deleted = await deleteServerTicket(codigo);
   return NextResponse.json({ deleted });
 }
