@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -30,6 +31,16 @@ if IS_POSTGRES:
     import psycopg
     from psycopg.rows import dict_row
 
+_PG_LOCK = threading.Lock()
+_PG_CONN: Any = None
+
+
+def _get_pg_conn() -> Any:
+    global _PG_CONN
+    if _PG_CONN is None or _PG_CONN.closed or _PG_CONN.broken:
+        _PG_CONN = psycopg.connect(DATABASE_URL, autocommit=False)
+    return _PG_CONN
+
 
 class _DBSession:
     """Thin adapter so SQLite (?) and PostgreSQL (%s) share identical queries."""
@@ -56,11 +67,20 @@ class _DBSession:
 @contextmanager
 def get_connection() -> Iterator[_DBSession]:
     if IS_POSTGRES:
-        conn = psycopg.connect(DATABASE_URL)
-        try:
-            yield _DBSession(conn, is_pg=True)
-        finally:
-            conn.close()
+        with _PG_LOCK:
+            conn = _get_pg_conn()
+            try:
+                yield _DBSession(conn, is_pg=True)
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                # Reset connection on network/transport error so next call reconnects cleanly
+                if conn.closed or conn.broken:
+                    global _PG_CONN
+                    _PG_CONN = None
+                raise
     else:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
@@ -96,8 +116,15 @@ def save_face_file(fingerprint_id: str, data_url: str) -> str:
     raw_b64 = data_url.split(",", 1)[1] if "," in data_url else data_url
     img_bytes = base64.b64decode(raw_b64)
 
-    # 1. Upload to Supabase Storage bucket `faces` when configured
-    cloud_path = _upload_face_to_supabase_storage(fingerprint_id, img_bytes)
+    # 1. Upload to Supabase Storage asynchronously so registration responds immediately
+    cloud_path = ""
+    if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+        cloud_path = f"supabase://{SUPABASE_FACES_BUCKET}/{fingerprint_id}.jpg"
+        threading.Thread(
+            target=_upload_face_to_supabase_storage,
+            args=(fingerprint_id, img_bytes),
+            daemon=True,
+        ).start()
 
     # 2. Also keep a local copy in storage/faces/ when filesystem is writable
     local_rel = ""
@@ -247,28 +274,6 @@ def init_db() -> None:
         )
         conn.commit()
 
-        # Backfill missing face files in local storage/faces/ or Supabase Storage
-        rows = conn.execute(
-            "SELECT id, face_fingerprint_id, face_image_data_url, face_image_path FROM users"
-        ).fetchall()
-        for r in rows:
-            fp_id = r["face_fingerprint_id"]
-            data_url = r["face_image_data_url"]
-            cur_path = r["face_image_path"] or ""
-            needs_cloud = bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY) and not cur_path.startswith("supabase://")
-            expected_file = FACES_DIR / f"{fp_id}.jpg"
-            if data_url and (needs_cloud or not expected_file.exists() or not cur_path):
-                try:
-                    saved_path = save_face_file(fp_id, data_url)
-                    if saved_path:
-                        conn.execute(
-                            "UPDATE users SET face_image_path = ? WHERE id = ?",
-                            (saved_path, r["id"]),
-                        )
-                except Exception:
-                    pass
-        conn.commit()
-
 
 def hash_password(password: str, salt: str) -> str:
     return hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
@@ -292,7 +297,11 @@ def get_user_by_email(email: str) -> Optional[dict[str, Any]]:
         if not row:
             return None
         user = dict(row)
-        user["dependentes"] = get_dependents_by_email(user["email"])
+        dep_rows = conn.execute(
+            "SELECT id, nome, parentesco, documento, created_at FROM dependents WHERE LOWER(user_email) = LOWER(?) ORDER BY created_at ASC",
+            (user["email"],),
+        ).fetchall()
+        user["dependentes"] = [dict(r) for r in dep_rows]
         return user
 
 
