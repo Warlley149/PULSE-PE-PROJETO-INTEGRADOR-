@@ -9,8 +9,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Pulse PE — Ilha do Retiro",
-  description: "Acesso Facial Homologado SDS-PE • Ilha do Retiro",
+  title: "Pulse-pe",
+  description: "Acesso Facial Homologado SDS-PE • Pulse-pe",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
