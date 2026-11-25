@@ -342,6 +342,14 @@ export function AdminPortalClient({
           codigo: ticket.codigo,
           decision,
           motivoReprovacao: reasonToSend,
+          jogo: ticket.jogo,
+          estadio: ticket.estadio,
+          portao: ticket.portao,
+          setor: ticket.setor,
+          dataHorario: ticket.dataHorario,
+          titular: ticket.titular,
+          cpf: ticket.cpf,
+          biometriaOk: ticket.biometriaOk,
         }),
       });
 
